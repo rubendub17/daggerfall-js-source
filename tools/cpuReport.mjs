@@ -40,7 +40,18 @@
 // reads the same in cmd and in PowerShell: `npm run cpu -- --attach <url> --snapshot`.
 //   --attach --url --scene --seconds --warmup --out --region --loc --port --target
 //   --chrome --sampling --ready --heapsampling --snapshot --online --headless --all
-//   --no-memory
+//   --no-memory --perf --zones --no-perf
+//
+// THE GPU NUMBER RIDES THE SAME RUN (2026-10-18). A CPU profile can only say what the
+// MAIN THREAD did. On a frame that costs 56 ms and runs 12 ms of JavaScript, the other
+// 44 ms is either the GPU or the present, and nothing in a JS profile can tell them
+// apart - which is exactly the question a report has to answer before it names a thing
+// to optimise. So every URL this file builds carries `&perf`, the port's own GPU clock
+// (src/render/perfMeter.js: EXT_disjoint_timer_query_webgl2, one console line every
+// PERF_EVERY world frames with the frame's mean GPU time and the lane's counts), and the
+// report prints it beside the JS it measured: GPU-bound or CPU-bound, with the number.
+// `--zones` asks for `?perf=zones` instead - the same total tiled into the passes that
+// made it - and `--no-perf` leaves the URL alone.
 //
 // Env:
 //   SCENE      city (default) | road | dungeon - what to boot and play in
@@ -115,7 +126,7 @@ const FLAGS = {
   '--port': 'PORT', '--target': 'TARGET', '--chrome': 'CHROME', '--sampling': 'SAMPLING',
   '--ready': 'READY', '--heapsampling': 'HEAP_SAMPLING',
 };
-const SWITCHES = { '--snapshot': ['SNAPSHOT', '1'], '--online': ['ONLINE', '1'], '--headless': ['HEADLESS', '1'], '--all': ['ALL', '1'], '--no-memory': ['MEMORY', '0'], '--frontdoor': ['FRONTDOOR', '1'], '--persist': ['PERSIST', '1'] };
+const SWITCHES = { '--snapshot': ['SNAPSHOT', '1'], '--online': ['ONLINE', '1'], '--headless': ['HEADLESS', '1'], '--all': ['ALL', '1'], '--no-memory': ['MEMORY', '0'], '--frontdoor': ['FRONTDOOR', '1'], '--persist': ['PERSIST', '1'], '--perf': ['PERF', '1'], '--no-perf': ['PERF', '0'], '--zones': ['ZONES', '1'] };
 for (let i = 2; i < process.argv.length; i++) {
   const a = process.argv[i];
   if (FLAGS[a]) { process.env[FLAGS[a]] = process.argv[++i] ?? ''; continue; }
@@ -149,10 +160,16 @@ const LOC = process.env.LOC || 'Daggerfall';   // the capital: DFU's densest tow
 // at the sky's rate and that changes what the living world is asked for.
 const ONLINE = process.env.ONLINE === '1';
 const ONLINE_DOOR = ONLINE ? '&online' : '';
+// THE GPU DOOR (`?perf`, see the header). On by default because a report without it
+// cannot answer "is this frame the JS or the GPU", and that is the first question a
+// reader of a 56 ms frame asks. ZONES=1 asks for the passes (`?perf=zones`), which is
+// the finer answer and the one worth the second run.
+const PERF = process.env.PERF !== '0';
+const PERF_DOOR = PERF ? (process.env.ZONES === '1' ? '&perf=zones' : '&perf') : '';
 const SCENES = {
-  city: `${BASE}/play/?world&region=${encodeURIComponent(REGION)}&loc=${encodeURIComponent(LOC)}&class=1&novideo&shot&play&fps${ONLINE_DOOR}`,
-  road: `${BASE}/play/?world&spawn=random&class=1&novideo&shot&play&fps${ONLINE_DOOR}`,
-  dungeon: `${BASE}/play/?shot&play&class=0&fps${ONLINE_DOOR}`,
+  city: `${BASE}/play/?world&region=${encodeURIComponent(REGION)}&loc=${encodeURIComponent(LOC)}&class=1&novideo&shot&play&fps${ONLINE_DOOR}${PERF_DOOR}`,
+  road: `${BASE}/play/?world&spawn=random&class=1&novideo&shot&play&fps${ONLINE_DOOR}${PERF_DOOR}`,
+  dungeon: `${BASE}/play/?shot&play&class=0&fps${ONLINE_DOOR}${PERF_DOOR}`,
 };
 const SCENE = process.env.SCENE || 'city';
 // READINESS, IN ORDER OF HOW MUCH IT CAN SEE.
@@ -182,7 +199,7 @@ const DEFAULT_READY = `(() => {
 // world doors, so the player plays exactly as in their own browser. Set by --frontdoor.
 const FRONTDOOR = process.env.FRONTDOOR === '1';
 const PERSIST = process.env.PERSIST === '1';
-const URL_ = process.env.URL || (FRONTDOOR ? `${BASE}/play/?fps${ONLINE_DOOR}` : SCENES[SCENE]);
+const URL_ = process.env.URL || (FRONTDOOR ? `${BASE}/play/?fps${ONLINE_DOOR}${PERF_DOOR}` : SCENES[SCENE]);
 const SECONDS = Math.max(1, Number(process.env.SECONDS || 60));
 const WARMUP = Math.max(0, Number(process.env.WARMUP || 8));
 const SAMPLING = Math.max(20, Number(process.env.SAMPLING || 250));
@@ -291,6 +308,69 @@ const fbytes = (b) => (b >= 1048576 ? `${f(b / 1048576)} MB` : `${f(b / 1024)} K
 /** Where a row lives. A built bundle keeps every function on line 1, so its column is
  *  the part that identifies it - `assets/main-ab12.js:1:20481` is a place you can find. */
 const at = (r) => `${r.file}${r.line ? `:${r.line}` : ''}${r.col ? `:${r.col}` : ''}`;
+
+/**
+ * THE `[perf]` LINE, READ (src/render/perfMeter.js). Two shapes, and the units tell them
+ * apart - a count has no decimal point, a zone is always `toFixed(2)`:
+ *   `[perf] gpu 21.40ms | draws 1210 | sun 3c/12d | lanterns 4k/12f/9d | ...`
+ *   `[perf] gpu 21.40ms | shadow 9.10 | grass 3.20 | air 1.80 | draws 1210`
+ * `gpu n/a` is the browser refusing EXT_disjoint_timer_query_webgl2 - the line is still
+ * worth reading for its counts, and the timer being absent is not a zero. The LAST line
+ * is the one returned: it is the mean of the frames the recording ended on.
+ * @param {string[]} lines every `[perf]` console line seen, oldest first
+ */
+export function parsePerf(lines) {
+  const last = Array.isArray(lines) ? lines[lines.length - 1] : null;
+  if (!last) return null;
+  const body = last.replace(/^.*?\[perf\]/, '').trim();
+  const parts = body.split('|').map((s) => s.trim()).filter(Boolean);
+  let gpuMs = null;
+  let cpuMs = null;
+  const zones = [];
+  const counts = [];
+  for (const p of parts) {
+    const total = p.match(/^(gpu|cpu) ([\d.]+)ms$/i);
+    // WHICH CLOCK, KEPT. `?perf=cpu` (perfMeter.js's PERF-CPU arm) tiles the frame on the MAIN THREAD's
+    // clock, so its total is not the GPU's and must never be printed as one - a report comparing a CPU
+    // total against the JavaScript would invent a split out of the same milliseconds counted twice.
+    if (total) { if (total[1].toLowerCase() === 'gpu') gpuMs = Number(total[2]); else cpuMs = Number(total[2]); continue; }
+    if (/^(gpu|cpu) n\/a$/i.test(p)) continue;
+    const zone = p.match(/^(.*?) (\d+\.\d+)$/);
+    if (zone) { zones.push([zone[1], Number(zone[2])]); continue; }
+    counts.push(p);
+  }
+  return { gpuMs, cpuMs, zones, counts, body, seen: lines.length };
+}
+
+/**
+ * WHICH HALF OF THE FRAME THIS IS, said in one line. The GPU number is the page's own
+ * clock and the JS number is this profile's share of the game's own code per frame;
+ * a frame that is mostly GPU will not speed up from work in `src/`, and one that is
+ * mostly JS will. Both are means over slightly different windows, so the margin that
+ * counts as "one side owns it" is 1.5x rather than 51/49.
+ */
+function bottleneckOf(gpuMs, jsPerFrame) {
+  if (gpuMs == null || jsPerFrame == null) return null;
+  if (gpuMs >= jsPerFrame * 1.5) {
+    return {
+      side: 'GPU',
+      text: `**GPU-bound**: the GPU takes ${f(gpuMs, 2)} ms a frame against ${f(jsPerFrame, 2)} ms of the game's JS. `
+        + 'Cutting `src/` cannot win back much of this one - take `--zones` and read the passes.',
+    };
+  }
+  if (jsPerFrame >= gpuMs * 1.5) {
+    return {
+      side: 'JS',
+      text: `**CPU-bound in the game's own JS**: ${f(jsPerFrame, 2)} ms a frame against ${f(gpuMs, 2)} ms of GPU. `
+        + 'The hot table below is the list of what to cut.',
+    };
+  }
+  return {
+    side: 'split',
+    text: `**split**: ${f(jsPerFrame, 2)} ms of game JS and ${f(gpuMs, 2)} ms of GPU - neither side owns the frame, `
+      + 'so the frame is lost between them (the present, or the driver waiting on both).',
+  };
+}
 
 /**
  * The allocation sampler's tree, summed per (function, file, line) as SELF bytes:
@@ -463,6 +543,12 @@ let page = null;
 let tabUrl = '';   // the URL the PAGE ITSELF reported - the one to trust in the report
 const errors = [];
 const logged = [];
+// THE `[perf]` LINES, KEPT APART FROM THE NOISE. The page prints one every PERF_EVERY
+// world frames (renderer.js's `console.info(line)`), so a 60 s recording of an 18 fps
+// window carries about nine of them and the LAST is the mean of the frames the profile
+// also ended on. `logged` is capped at 40 lines of everything, which the game's own chat
+// and audio chatter would fill before the first `[perf]` arrived.
+const perfLines = [];
 // `--browser` is a launch in the PLAYER'S browser: it navigates the page itself, so it
 // waits for the world to settle like a launched window does. A true ATTACH is a tab
 // already being played and is never navigated.
@@ -475,7 +561,12 @@ const TAKES_SETTLE = !ATTACH || OWN_BROWSER;
 // listener attached after `goto` would miss exactly those.
 const watch = () => {
   page.on('pageerror', (e) => errors.push(String(e?.message ?? e)));
-  page.on('console', (m) => { if (logged.length < 40) logged.push(`${m.type()}: ${m.text()}`.slice(0, 240)); });
+  page.on('console', (m) => {
+    const text = m.text();
+    // The GPU number first: it is the one line this file cannot reconstruct later.
+    if (text.includes('[perf]') && perfLines.length < 500) perfLines.push(text.slice(0, 600));
+    if (logged.length < 40) logged.push(`${m.type()}: ${text}`.slice(0, 240));
+  });
 };
 
 try {
@@ -668,7 +759,8 @@ try {
   const idleUs = list.filter((r) => r.fn === '(idle)').reduce((a, r) => a + r.us, 0);
   const activeUs = Math.max(1, totalUs - idleUs);
   const idleShare = pct(idleUs, totalUs);
-  const gameShare = pct(game.reduce((a, r) => a + r.us, 0), activeUs);
+  const gameUs = game.reduce((a, r) => a + r.us, 0);
+  const gameShare = pct(gameUs, activeUs);
   // `active` is the whole denominator's own list, so ALL=1 cannot print an
   // `(idle)` row at a thousand percent of a base that excludes it.
   const active = list.filter((r) => r.fn !== '(idle)');
@@ -677,6 +769,37 @@ try {
   // While a page is mostly asleep, `ms/frame` divides a real millisecond by a frame
   // that mostly did not happen: the column would read 0.00 beside a "60 fps" header.
   const perFrame = sleeping ? 0 : frames;
+  // THE NUMBER THIS FILE CANNOT MEASURE. A CPU profile of the main thread says nothing
+  // about the GPU, so the page's own `[perf]` line (EXT_disjoint_timer_query_webgl2) is
+  // the only clock on that side. Beside the JS this profile DID measure it answers the
+  // question a reader of a 56 ms frame asks first: is there anything to win here at all?
+  const perf = parsePerf(perfLines);
+  const jsPerFrame = frames ? ms(gameUs) / frames : null;
+  const frameMs = after?.meanMs ?? before?.meanMs ?? null;
+  // A VERDICT NEEDS A WORLD THAT IS RUNNING. `fps` is the PAGE's own counter: a menu, a
+  // character guide or a paused game draws a handful of frames with no host stamping any,
+  // and dividing the game's JS by eleven frames of a paused page names a bottleneck that
+  // is not there (measured on the new-character guide: 1 fps, "game JS 122 ms", reported
+  // as JavaScript-bound). The split is read only when the window was actually drawing.
+  const notDrawing = sleeping || !frames || frames < 20;
+  const bottleneck = notDrawing ? null : bottleneckOf(perf?.gpuMs ?? null, jsPerFrame);
+  // WHY THE SPLIT WAS NOT READ, WHEN IT WAS NOT. Three different nulls, three different sentences: a
+  // browser refusing its timer, a page with no `&fps` counter, and a window that was not drawing are
+  // not the same fault, and blaming "the page was not drawing" for a refused timer sends a reader
+  // after a paused game that never existed.
+  const whyNoSplit = notDrawing
+    ? ['the page was not drawing steadily (its idle share and its frame time say so), so a GPU mean and a',
+      'JavaScript mean are of different things - record inside a running world before trusting a split.']
+    : !perf
+      ? ['no `[perf]` line reached this report, so nothing here can say whether the frame is the GPU or the',
+        'JavaScript - the profile can only see the main thread.']
+      : perf.gpuMs == null && perf.cpuMs != null
+        ? ['the page\'s `[perf]` line is a MAIN-THREAD tiling (`?perf=cpu`), not the GPU clock, so there is no',
+          'GPU number to compare the JavaScript against.']
+        : jsPerFrame == null
+          ? ['the page carried no `&fps` counter, so there is no per-frame JavaScript to divide.']
+          : ['the page\'s GPU timer answered n/a (the browser refused EXT_disjoint_timer_query_webgl2), so the',
+            'JavaScript column is the only clock this window has.'];
 
   // the report ----------------------------------------------------------------------------------
   const modules = new Map();
@@ -700,6 +823,39 @@ try {
       ? `\`ms/frame\` is that function\'s share of one frame at the measured ${f(fps, 0)} fps.`
       : '`ms/frame` is empty: put `&fps` on the URL and the counter reports the frame this is a share of.',
     '',
+    ...(perf ? [
+      '## The frame: GPU or JS',
+      '',
+      '`?perf` is the port\'s own GPU clock - the number a main-thread CPU profile cannot',
+      'see - printed beside the JavaScript this profile did measure. Read it first: it says',
+      'whether the tables below can help at all.',
+      '',
+      '| measure | value |',
+      '|---|---|',
+      `| ${perf.cpuMs != null && perf.gpuMs == null ? 'CPU a frame (the page\'s `?perf=cpu`)' : 'GPU a frame (the page\'s `?perf`)'} | ${perf.gpuMs != null ? `${f(perf.gpuMs, 2)} ms` : perf.cpuMs != null ? `${f(perf.cpuMs, 2)} ms` : 'n/a - the browser refused the timer'} |`,
+      `| game JS a frame (this profile) | ${jsPerFrame == null ? 'n/a - no fps counter on the page' : `${f(jsPerFrame, 2)} ms`} |`,
+      `| frame (the page\'s counter) | ${frameMs == null ? 'n/a' : `${f(frameMs, 2)} ms`} |`,
+      ...(perf.counts.length ? [`| the lane\'s counts | ${perf.counts.join(', ')} |`] : []),
+      `| \`[perf]\` lines seen in the window | ${perf.seen} |`,
+      '',
+      ...(bottleneck ? [bottleneck.text, ''] : ['Not read from this window:', ...whyNoSplit, '']),
+      ...(perf.zones.length ? [
+        '### GPU by pass (the `?perf=zones` tiling)',
+        '',
+        '| ms | pass |',
+        '|---:|---|',
+        ...perf.zones.sort((a, b) => b[1] - a[1]).map(([name, v]) => `| ${f(v, 2)} | ${name} |`),
+        '',
+      ] : []),
+    ] : [
+      '## The frame: GPU or JS',
+      '',
+      'No `[perf]` line reached this report, so nothing here can say whether the frame is',
+      'the GPU or the JavaScript - the profile can only see the main thread. Every URL this',
+      'file builds carries `&perf` (turn it off with `--no-perf`); a run started from',
+      '`--url` or an `--attach`ed tab needs `&perf` on the page it is playing.',
+      '',
+    ]),
     `## Hot functions${ALL ? '' : ' in the game\'s own code'}`,
     '',
     table((ALL ? active : game).slice(0, 40), activeUs, perFrame),
@@ -741,6 +897,20 @@ try {
   const show = (ALL ? active : game).slice(0, 20);
   console.log(`cpu: ${f(wallSeconds)} s profiled, ${samples} samples, ${fps ? `${f(fps, 0)} fps` : 'fps unknown'}, idle ${f(idleShare)}%, game code ${f(gameShare)}% of active time`);
   if (heapBefore) console.log(`cpu: heap ${fbytes(heapBefore.used)} of ${fbytes(heapBefore.total)} -> ${fbytes(heapAfter?.used ?? heapBefore.used)}${grew == null ? '' : ` (${grew >= 0 ? '+' : ''}${fbytes(grew)} over the window)`}`);
+  // The GPU line, before the function table: it is what says whether the table matters.
+  if (perf?.gpuMs != null) {
+    console.log(`cpu: gpu ${f(perf.gpuMs, 2)} ms a frame vs game JS ${jsPerFrame == null ? '?' : f(jsPerFrame, 2)} ms${frameMs == null ? '' : ` (frame ${f(frameMs, 2)} ms)`}${bottleneck ? ` - ${bottleneck.side}` : ' - no verdict: the page was not drawing steadily'}`);
+    if (perf.zones.length) {
+      const zones = [...perf.zones].sort((a, b) => b[1] - a[1]);
+      console.log(`cpu: gpu by pass - ${zones.map(([name, v]) => `${name} ${f(v, 2)}`).join(', ')}`);
+    }
+  } else if (perf?.cpuMs != null) {
+    console.log(`cpu: the page's \`[perf]\` is a main-thread tiling (\`?perf=cpu\`): ${f(perf.cpuMs, 2)} ms a frame - no GPU number in this window`);
+  } else if (perf) {
+    console.log('cpu: the page printed a `[perf]` line but the GPU timer read n/a - the browser refused EXT_disjoint_timer_query_webgl2, so the JS column is the only clock');
+  } else if (PERF) {
+    console.warn('cpu: no `[perf]` line in the window - the meter prints one every 120 world frames, so a very short or very slow window can end before the first');
+  }
   if (sleeping) console.warn('cpu: more than half the window was idle - the page was not drawing frames; is the game paused, or the tab hidden?');
   for (const r of show) console.log(`  ${f(ms(r.us)).padStart(8)} ms  ${f(pct(r.us, activeUs)).padStart(5)}%  ${r.fn}  ${at(r)}`);
   if (alloc) {
