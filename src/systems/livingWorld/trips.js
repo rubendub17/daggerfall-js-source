@@ -125,6 +125,7 @@ export const DRY_STEP_N = 80;
  *   fate?: (trip: Trip) => (Trip | undefined),
  *   lanesFrom?: (town: LwTown) => ({ to: LwTown, len: number, key: string }[] | undefined),
  *   dryAt?: (nx: number, nz: number) => boolean,
+ *   waysStalled?: () => boolean,
  * }} TripWorld - the host's: towns near a pixel (the game's own rows, populated); the planner's way between two towns
  *   (undefined while it is being asked, null for none); a town's travellers (census.js travellerRoster). LW4: who holds
  *   a traveller's place in a cycle (lives.js - null while it stands empty; unasked, the census's own), whether its
@@ -132,7 +133,13 @@ export const DRY_STEP_N = 80;
  *   a trip meets (trouble.js - the trip as it left it; AUDIT LW-II E1: undefined while it waits on a way). LW6: the dungeons near a pixel (`dungeon: true` rows - an
  *   adventurer's dives). LW5b: the Bay's lanes from a port town (naval/seaLanes.js: the far port, the lane's length in
  *   metres; none for a town with no harbour; undefined while the map is unread). LW-DRY: whether the ground at a native
- *   point is dry (`nativeDry` over world/dryGround.js - the height map's own, every client's alike); unasked, all is dry)
+ *   point is dry (`nativeDry` over world/dryGround.js - the height map's own, every client's alike); unasked, all is dry.
+ *   PERF-LW-WAYS2 `waysStalled`: the way book has spent this frame's asking, so a refusal is every pair's answer
+ * @typedef {{ mpm: number, memo?: Map<string, Trip|null>, waiting?: Map<string, { from: LwTown, to: LwTown }>,
+ *   waitsOn?: { from: LwTown, to: LwTown } | null }} TripBook - one read of the trips: the clock's pace in metres a
+ *   minute, the book a trip of a cycle is kept in (`memoTrip`), and (PERF-LW-WAYS1) what the pending ones wait on - the
+ *   pair each stopped at in `waiting`, and the one the ladder last stopped at in `waitsOn`, so a retry asks that pair
+ *   alone instead of walking the whole candidate ladder again
  * @typedef {{ id: string, k?: number, kind: string, leader: Resident, party: Resident[], from: LwTown, to: LwTown, way: Way,
  *   pace: number, outT0: number, outT1: number, backT0: number, backT1: number, trim0: number, trim1: number,
  *   enc?: any, halt?: { t0: number, t1: number, fightEnd: number, s: number, leg: 'out'|'back' },
@@ -519,10 +526,11 @@ export function innAhead(way, s, dir, lo, hi) {
 /**
  * The trip a traveller makes in cycle `k` (only the traveller's own choice - no caravan yet), null for none, undefined
  * while a way it needs is still being asked.
- * @param {Resident} res @param {LwTown} home @param {number} k @param {TripWorld} world @param {{ mpm: number }} o
+ * @param {Resident} res @param {LwTown} home @param {number} k @param {TripWorld} world @param {TripBook} o
  * @returns {Trip|null|undefined}
  */
-export function ownTrip(res, home, k, world, { mpm }) {
+export function ownTrip(res, home, k, world, o) {
+  const { mpm } = o;   // PERF-LW-WAYS3: the whole options object, so the pair a refusal stops on can be recorded on it
   const chance = rowOf(TRIP_CHANCE, ROAD_TRIP_CHANCE, res.job);
   if (!(chance > 0)) return null;
   if ((res.job === 'patrol' || res.job === 'adventurer') && leaderOf(res, world.rosterOf(home))) return null;   // LW9: a patrol's rides with its first; LW13: a company's with its first
@@ -599,7 +607,7 @@ export function ownTrip(res, home, k, world, { mpm }) {
   const offsetRoll = rng();
   for (const to of order) {
     const plan = world.routeOf(home, to);
-    if (plan === undefined) return undefined;
+    if (plan === undefined) { o.waitsOn = { from: home, to }; return undefined; }   // PERF-LW-WAYS3: the one pair a retry asks
     if (!plan || !(plan.pixels?.length >= 2)) continue;
     const way = innsAlong(wayOf(plan, world.dryAt), plan, world, home, to);   // LW9: the inns on its road
     const [trim0, trim1] = wayTrims(home, /** @type {LwTown} */ (to), way);   // WALL-WAY: past each town's walls
@@ -768,17 +776,45 @@ export function diveTrip(res, home, k, world, { start, len, pace, rng }) {
   return null;
 }
 
+/** PERF-LW-WAYS3: how many pending trips' pairs are remembered before the book is emptied
+ *  again - one small object each, and losing them costs a ladder walk, not an answer. */
+export const WAITS_MAX = 20000;
+
 /**
  * A traveller's own trip of a cycle, kept in the book (`o.memo`) - a trip of a cycle never changes, so it is asked
  * again only while it waits on a way (undefined).
- * @param {Resident} res @param {LwTown} town @param {number} k @param {TripWorld} world @param {{ mpm: number, memo?: Map<string, Trip|null> }} o
+ * @param {Resident} res @param {LwTown} town @param {number} k @param {TripWorld} world @param {TripBook} o
  * @returns {Trip|null|undefined}
  */
 export function memoTrip(res, town, k, world, o) {
   const key = `${res.id}:${k}`;
-  let trip = o.memo?.get(key);
-  if (trip === undefined) { trip = ownTrip(res, town, k, world, o); if (trip !== undefined) o.memo?.set(key, trip); }
-  return trip;
+  const trip = o.memo?.get(key);
+  if (trip !== undefined) return trip;
+  // PERF-LW-WAYS3: A RETRY ASKS ONLY WHAT IT WAITED ON. The trip cannot be kept while a
+  // way it needs is unasked (undefined, below), so a pending traveller re-ran the whole
+  // ladder - the townsNear filter, the weight draw, every routeOf - to hear the same "not
+  // yet". That was 85-90% of a pending town's read. The recorded pair is asked on its own
+  // and, still unasked, answers at once; landed, the ladder runs and draws exactly as it
+  // would have without the record (same rng stream, same order, same trip).
+  const waiting = o.waiting;
+  const w = waiting?.get(key);
+  if (w) {
+    if (world.routeOf && world.routeOf(w.from, w.to) === undefined) return undefined;
+    waiting.delete(key);
+  }
+  o.waitsOn = null;
+  const made = ownTrip(res, town, k, world, o);
+  if (made !== undefined) { o.memo?.set(key, made); waiting?.delete(key); return made; }
+  if (o.waitsOn && waiting) {
+    waiting.set(key, o.waitsOn);
+    // PERF-LW-WAYS3: THE WAITS BOOK HAS ITS OWN BOUND, and it needs one. A pending trip
+    // is never put in the memo, so the memo's 40 000-entry cap cannot fire on its
+    // account - a long session in a big world would grow this map with nothing to stop
+    // it. Clearing it costs only the shortcut (the next retry walks the ladder again),
+    // never a wrong trip, so it may be far tighter than the memo's own bound.
+    if (waiting.size > WAITS_MAX) waiting.clear();
+  }
+  return made;
 }
 
 /** The contract's deal: the town's merchants and its sellswords, each in slot order (formCaravans, contractOf). @param {Resident[]} roster */
@@ -808,7 +844,7 @@ export function placeCycle(res, roster, day, scale) {
  * LW4: does the holder of a place set out at all in its cycle `k` - its own trip, a sellsword its contract merchant's
  * (a fated sellsword goes with it whatever the hire said)? A fated holder who does not dies abroad, unseen. Undefined
  * while a way is asked.
- * @param {Resident} res @param {LwTown} town @param {number} k @param {TripWorld} world @param {{ mpm: number, memo?: Map<string, Trip|null> }} o
+ * @param {Resident} res @param {LwTown} town @param {number} k @param {TripWorld} world @param {TripBook} o
  * @returns {boolean|undefined}
  */
 export function setsOut(res, town, k, world, o) {
@@ -860,6 +896,11 @@ export function townTrips(town, t, world, o) {
         if (!holder) continue;
         const trip = tripOf(holder, k);
         if (trip) cands.push(trip);
+        // PERF-LW-WAYS2: A REFUSAL IS THIS PASS'S ANSWER. The frame's asking is spent, so
+        // every pair after this is refused too - the rest of the roster re-planned nothing.
+        // Undefined, never an empty list: an empty word is KEPT by _roadsOf and that town
+        // would lose its road for the day.
+        else if (pending && world.waysStalled?.()) return undefined;
       }
     }
     if (pending) return undefined;
@@ -1192,7 +1233,7 @@ export function visitorsOf(town, day, world, o) {
   for (const from of homes) {
     if (from.mapId === town.mapId) continue;
     const trips = townTrips(from, D0 + DAY_MIN / 2, world, o);
-    if (trips === undefined) { pending = true; continue; }
+    if (trips === undefined) { pending = true; if (world.waysStalled?.()) return undefined; continue; }   // PERF-LW-WAYS2: the rest of the towns would hear the same refusal
     for (const tr of trips) {
       if (tr.to.mapId !== town.mapId || tr.turned || !(tr.outT1 < D1 && tr.backT0 > D0)) continue;   // LW4: a party turned home never comes
       for (const res of membersAt(tr, tr.outT1)) out.push({ res, trip: tr, inT: tr.outT1, outT: tr.backT0, yaw: arrivingYaw(tr), dock: !!tr.sea });   // LW5b: off a ship, by the dock
@@ -1226,7 +1267,7 @@ export function innGuestsOf(inn, day, world, o) {
   for (const from of world.townsNear(inn.px ?? 0, inn.py ?? 0, TRIP_REACH_PX)) {
     for (const d of [day - 1, day]) {
       const trips = townTrips(from, d * DAY_MIN + 23 * 60, world, o);
-      if (trips === undefined) { pending = true; break; }
+      if (trips === undefined) { pending = true; if (world.waysStalled?.()) return undefined; break; }   // PERF-LW-WAYS2
       // AUDIT LW-II E2: THE NIGHT SOUNDED WHOLE - from nightfall to the next first light, a quarter hour at a time, the
       // first minute lodged its coming in (to the minute between the two soundings). Before, only eleven o'clock was
       // asked: a party walking on in the dark that reached the inn later (the online pace's, half the calendar's) was
@@ -1407,7 +1448,7 @@ export function fallenIn(dungeon, t, world, o) {
     // a trip is its town's within a day of its end: read back over the days the remains lie
     for (let back = 0; back * DAY_MIN <= DEEP_REMAINS_MIN + DAY_MIN; back++) {
       const trips = townTrips(town, t - back * DAY_MIN, world, o);
-      if (trips === undefined) { pending = true; break; }
+      if (trips === undefined) { pending = true; if (world.waysStalled?.()) return undefined; break; }   // PERF-LW-WAYS2
       for (const trip of trips) {
         if (!trip.dive || trip.to?.mapId !== dungeon.mapId) continue;
         for (const f of trip.fallen ?? []) {

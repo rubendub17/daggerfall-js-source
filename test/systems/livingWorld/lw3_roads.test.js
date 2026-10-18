@@ -446,7 +446,12 @@ test('LW3 the streaming host: the trips\' world is the game\'s own populated row
   assert.match(w, /const livingWays = createWayBook\(\{\n\s*roads: \(\) => terrainGen\.roads\(\),\n\s*ground: \(\) => \(_livingGround \?\?= routeGround\(\(px, py\) => maps\.getClimateIndex\(px, py\), \(px, py\) => woods\.getHeightMapValue\(px, py\), WATER_BYTE\)\),\n\s*\}\);/, 'the ways: the living world\'s own book, on the drawn roads and the game\'s own ground (no player\'s massifs)');
   assert.match(w, /const livingRouteOf = \(a, b\) => livingWays\.wayOf\(a, b\);/);
   assert.match(w, /tripsOf: \(day\) => livingTripsOf\(livingTown, day\), armOf: livingArmOf,/);
-  assert.match(w, /livingWays\.frame\(\); livingMemoFresh\(\);[^\n]*\n(?:\s*livingTurnsFresh\(\);[^\n]*\n)?\s*if \(livingWorldOn\(\) && _mode\(\) === 'exterior'\) \{\n\s*livingRoadsOf\(\)\.frame\(townTalk\.overlayActive \? 0 : dt, cam\.pos, \{ overworld: tvf \? \{ grow: tvf\.grow, blend: tvf\.blend \} : null \}\);\n\s*livePersonBatches\.push\(\.\.\.livingRoads\.batches\(\)\);\n(?:\s*livingRoads\.drawBodies\([^\n]*\n)?\s*\} else if \(livingRoads\) livingRoads\.clear\(\);/);   // PIN MOVED (MWNPC10c, Morrowind-NPCs.md section 15c): the road's bodies drawn after their batches join the flats
+  // PIN MOVED (PERF-LW-WAYS1, 2026-10-18): THE WAYS' BUDGET IS RENEWED BEFORE THE STREET ASKS. It stood after
+  // `framePopulation()`, so the town's read saw only the previous frame's leftovers: the book refused every pair, the
+  // day's word stayed undefined for 158 frames running (16-20 ms a tick, 2 847 ms of a Daggerfall-city profile).
+  // The roads' own block still follows `livingTurnsFresh()`, below.
+  assert.match(w, /livingWays\.frame\(\); livingMemoFresh\(\);[^\n]*\n\s*framePopulation\(\);/, 'the ways asked before the street reads them');
+  assert.match(w, /livingTurnsFresh\(\);[^\n]*\n\s*if \(livingWorldOn\(\) && _mode\(\) === 'exterior'\) \{\n\s*livingRoadsOf\(\)\.frame\(townTalk\.overlayActive \? 0 : dt, cam\.pos, \{ overworld: tvf \? \{ grow: tvf\.grow, blend: tvf\.blend \} : null \}\);\n\s*livePersonBatches\.push\(\.\.\.livingRoads\.batches\(\)\);\n(?:\s*livingRoads\.drawBodies\([^\n]*\n)?\s*\} else if \(livingRoads\) livingRoads\.clear\(\);/);   // PIN MOVED (MWNPC10c, Morrowind-NPCs.md section 15c): the road's bodies drawn after their batches join the flats
   assert.match(w, /indoorRainSource: betterAmbience\.rainPlaying\(\) \}\);\n\s*if \(livingRoads\) livingRoads\.clear\(\);/, 'indoors, underground: the road\'s bodies freed (the modal arm)');
   assert.match(w, /personDistances: _talkPersons\(\)\.map\(\(p\) => rayPersonDistance\(cam\.pos, useFwd, p\.pos\)\),/);
   assert.match(w, /townTalk\.tryActivate\(cam\.pos, useFwd, _talkPersons\(\), _nonPersonRival\)/);

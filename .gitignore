@@ -109,3 +109,11 @@ weapon-glow-probe/
 ._*
 Thumbs.db
 desktop.ini
+
+# PERF-CPU-REPORT: tools/cpuReport.mjs's default outputs - the ranked report, the raw
+# profile beside it and the screenshot a refused settle takes. Made by a run and read
+# by a person; the TOOL is the source, these are what it prints. Never committed.
+cpu-report.md
+cpu-report.cpuprofile
+cpu-report-fail.png
+

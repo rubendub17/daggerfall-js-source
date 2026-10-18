@@ -445,11 +445,12 @@
   {
     "name": "LW3-host-network-memo-kept",
     "file": "src/scenes/world.js",
-    "old": "    livingWays.frame(); livingMemoFresh();   // LW3: a new network, new ways",
-    "new": "    livingWays.frame();   // LW3: a new network, new ways",
+    "old": "    livingWays.frame(); livingMemoFresh();\n    framePopulation();",
+    "new": "    livingWays.frame();\n    framePopulation();",
     "tests": [
       "test/systems/livingWorld/lw3_roads.test.js"
-    ]
+    ],
+    "note": "PIN MOVED (PERF-LW-WAYS1, 2026-10-18): the pair now stands ABOVE framePopulation - the town's read asks the book before the budget was renewed, and refused every pair for 158 frames."
   },
   {
     "name": "LW3-host-roads-unwired",

@@ -3149,10 +3149,16 @@ export async function bootWorld(canvas, renderer, params, status) { handHeroGend
     townsIn: (region) => livingTownsOfRegion(region),   // LW12: a region's towns, its bands' legs
   };
   const _livingTripMemo = new Map();
+  // PERF-LW-WAYS1: THE PAIR EACH PENDING TRIP WAITS ON. `memoTrip` never keeps an
+  // undefined answer (a way may still land), so a pending traveller used to re-run its
+  // whole candidate ladder - townsNear, the weight draw, every routeOf - to hear the
+  // same "not yet". The record lets the retry ask that ONE pair and stop (~1 µs).
+  // Cleared wherever the memo is: the ways' generation, the bound, a turn of fate.
+  const _livingTripWaits = new Map();
   let _livingWaysSeen = 0;
   /** AUDIT-B8: the trips' memo kept to its bound and to the network's generation by every reader (the roads', the deep's
    *  and the towns' - only the towns' asked it, and a long stay below grew it unbounded). */
-  const livingMemoFresh = () => { if (_livingTripMemo.size > 40000 || livingWays.generation !== _livingWaysSeen) { _livingTripMemo.clear(); _livingWaysSeen = livingWays.generation; } };
+  const livingMemoFresh = () => { if (_livingTripMemo.size > 40000 || livingWays.generation !== _livingWaysSeen) { _livingTripMemo.clear(); _livingTripWaits.clear(); _livingWaysSeen = livingWays.generation; } };
   // LW4: THE LIVES AND THE TROUBLE (lives.js, trouble.js) - who holds each traveller's place in a cycle (the census's
   // newcomer after a death on the road; nobody while the place stands empty) and what befalls each party, read over the
   // character's own turns of fate (relations.js); each kept in a book, made again when a turn is made or a save loaded
@@ -3165,7 +3171,7 @@ export async function bootWorld(canvas, renderer, params, status) { handHeroGend
     const v = livingRelations.turnsVersion();
     if (_livingTurnsRel === livingRelations && _livingTurnsV === v) return;
     _livingTurnsRel = livingRelations; _livingTurnsV = v;
-    _livingPlaces.clear(); _livingFates.clear(); _livingTripMemo.clear();
+    _livingPlaces.clear(); _livingFates.clear(); _livingTripMemo.clear(); _livingTripWaits.clear();
   };
   /** A resident's place in cycle `k`: who holds it (null: empty), whether the road takes its holder that cycle, and (LW7)
    *  the minute a hand took them (null: none) - a townsperson's as a traveller's, the newcomer the census's own mint. */
@@ -3260,6 +3266,7 @@ export async function bootWorld(canvas, renderer, params, status) { handHeroGend
   };
   livingTripWorld.holderOf = (res, k) => livingPlaceOf(res, k).holder;
   livingTripWorld.fated = (res, k) => livingPlaceOf(res, k).diced;   // AUDIT-B1: the dice's - a trip a spare re-rolled was gone from the road
+  livingTripWorld.waysStalled = () => livingWays.stalled;   // PERF-LW-WAYS2: whether the book has spent this frame's asking - a refused pair is then every pair's answer, and the trips stop walking their lists
   livingTripWorld.fate = (trip) => {
     const key = `${trip.id}|${trip.party.map((m) => m.id).join(',')}`;
     let f = _livingFates.get(key);
@@ -3283,7 +3290,7 @@ export async function bootWorld(canvas, renderer, params, status) { handHeroGend
     livingMemoFresh();   // a new network, new ways
     livingTurnsFresh();
     livingWordFresh();   // LW16: the town's news kept with the roads
-    const o = { mpm: PERSON_MOVE_SPEED / livingBaseRate(), memo: _livingTripMemo };
+    const o = { mpm: PERSON_MOVE_SPEED / livingBaseRate(), memo: _livingTripMemo, waiting: _livingTripWaits };
     const noon = day * 1440 + 240 + 720;
     const trips = townTrips(town, noon, livingTripWorld, o);
     const roadVisitors = tripVisitorsOf(town, day, livingTripWorld, o);
@@ -34834,13 +34841,20 @@ const _pixelOrder = [];   // NEAR-FIRST: the frame's pixel walk, nearest first -
       }
     }
     };
+    // PERF-LW-WAYS1: THE WAYS' BUDGET RENEWED BEFORE THE STREET ASKS. The town's read
+    // (framePopulation → LivingTown._tick → _roadsOf → livingTripsOf → townTrips) asks the
+    // book for the pairs its trips need. Renewed after it, that read saw only the previous
+    // frame's leftovers: the book refused every pair, the day's word stayed undefined for
+    // 158 frames running, and it burned 16-20 ms a tick getting nothing (2 847 ms of a
+    // Daggerfall-city CPU profile). `livingMemoFresh` rides with it, so a clear lands
+    // before the read rather than after it.
+    livingWays.frame(); livingMemoFresh();
     framePopulation();
     // AUDIT LEGACY III W4: held under a talk window, as the street is (the member met walked on the spot behind their card)
     if (familyStreet) { familyStreet.end(townTalk.overlayActive ? 0 : dt, cam.pos); livePersonBatches.push(...familyStreet.batches()); }
     folkStreet.draw(canvas, proj, view, mwv.eye, townTalk.overlayActive ? 0 : dt);   // MWNPC7: the walkers' bodies - held under a talk, as the street is
     // LW3: THE ROADS - the living world's parties near, in file by day and about their fires by night (scenes/
     // livingRoads.js), on the ground and grown under the Overworld; the planner asked a few ways a frame
-    livingWays.frame(); livingMemoFresh();   // LW3: a new network, new ways (AUDIT-B8: and the memo's bound)
     livingTurnsFresh();   // LW4: a turn of fate made, or a save loaded - the books made again
     if (livingWorldOn() && _mode() === 'exterior') {
       livingRoadsOf().frame(townTalk.overlayActive ? 0 : dt, cam.pos, { overworld: tvf ? { grow: tvf.grow, blend: tvf.blend } : null });

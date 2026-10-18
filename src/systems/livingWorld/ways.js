@@ -75,6 +75,10 @@ export function createWayBook({ roads, ground, plan = planRoute, now = () => per
     },
     /** A new frame: the asking renewed - `n` pairs at the least, and more while it has taken under `ms` (PERF-WAYS1). */
     frame(n = WAYS_PER_FRAME, ms = WAYS_MS_PER_FRAME) { budget = n; asked = 0; spent = 0; spendMs = ms; },
+    /** PERF-LW-WAYS2: this frame's asking is spent, so a pair asked now is refused (the same test
+     *  `wayOf` makes). A caller already refused once can stop walking its list instead of asking
+     *  every remaining pair to hear the same no - measured, that was 85-90% of a pending read. */
+    get stalled() { return budget <= 0 && !(spent < spendMs && asked < WAYS_MAX_PER_FRAME); },
     /** Bumped each time the network changed under the book (the host's trips are cleared with it). */
     get generation() { return generation; },
     get size() { return book.size; },

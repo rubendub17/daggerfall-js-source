@@ -2,12 +2,12 @@
   {
     "name": "HOST-SPLIT-a-ceiling-under-its-host",
     "file": "test/scenes/hostceiling.test.js",
-    "old": "['src/scenes/world.js', 'bootWorld', 21_186, MODULE]",
+    "old": "['src/scenes/world.js', 'bootWorld', 21_188, MODULE]",
     "new": "['src/scenes/world.js', 'bootWorld', 20_900, MODULE]",
     "tests": [
       "test/scenes/hostceiling.test.js"
     ],
-    "note": "PIN MOVED (FIELD BUGS 2026-10-16b GRAVE-PARTY): world.js's ceiling lowered 21,676 -> 21,638 on main's count (21,679 -> 21,641 on its branch before the merge; activateGrave out)."
+    "note": "PIN MOVED (PERF-LW-WAYS1, 2026-10-18): the ceiling raised 21,186 -> 21,188 for two wiring lines the living world's trip book needs (the pending pair's record beside the memo, and the way book's `stalled` handed to the trips)."
   },
   {
     "name": "HOST-SPLIT-a-ceiling-left-high",
