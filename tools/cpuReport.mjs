@@ -115,7 +115,7 @@ const FLAGS = {
   '--port': 'PORT', '--target': 'TARGET', '--chrome': 'CHROME', '--sampling': 'SAMPLING',
   '--ready': 'READY', '--heapsampling': 'HEAP_SAMPLING',
 };
-const SWITCHES = { '--snapshot': ['SNAPSHOT', '1'], '--online': ['ONLINE', '1'], '--headless': ['HEADLESS', '1'], '--all': ['ALL', '1'], '--no-memory': ['MEMORY', '0'] };
+const SWITCHES = { '--snapshot': ['SNAPSHOT', '1'], '--online': ['ONLINE', '1'], '--headless': ['HEADLESS', '1'], '--all': ['ALL', '1'], '--no-memory': ['MEMORY', '0'], '--frontdoor': ['FRONTDOOR', '1'], '--persist': ['PERSIST', '1'] };
 for (let i = 2; i < process.argv.length; i++) {
   const a = process.argv[i];
   if (FLAGS[a]) { process.env[FLAGS[a]] = process.argv[++i] ?? ''; continue; }
@@ -178,7 +178,11 @@ const DEFAULT_READY = `(() => {
   globalThis.__cpuSteadySince ||= Date.now();
   return Date.now() - globalThis.__cpuSteadySince >= 2000;
 })()`;
-const URL_ = process.env.URL || SCENES[SCENE];
+// FRONTDOOR: the real menu - login, character pick, the world - instead of the probe's
+// world doors, so the player plays exactly as in their own browser. Set by --frontdoor.
+const FRONTDOOR = process.env.FRONTDOOR === '1';
+const PERSIST = process.env.PERSIST === '1';
+const URL_ = process.env.URL || (FRONTDOOR ? `${BASE}/play/?fps${ONLINE_DOOR}` : SCENES[SCENE]);
 const SECONDS = Math.max(1, Number(process.env.SECONDS || 60));
 const WARMUP = Math.max(0, Number(process.env.WARMUP || 8));
 const SAMPLING = Math.max(20, Number(process.env.SAMPLING || 250));
@@ -319,7 +323,7 @@ function table(rows, totalUs, frames) {
   return [head, ...body].join('\n');
 }
 
-// â”€â”€ the browser â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ the browser ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 // A Chrome is a Chrome, but THIS checkout's playwright (1.56) asks for one build
 // number and a machine often holds another - `npm run perf` fails the same way.
 // So the bundled browser is tried first, then the cache's newest chromium, then
@@ -489,10 +493,30 @@ try {
     watch();
     console.log(`cpu: attached to ${tabUrl}`);
   } else {
-    browser = await launchBrowser(HEADLESS
-      ? { headless: true, args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] }
-      : { headless: false });
-    page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+    if (PERSIST) {
+      // --persist: the SAME profile every run, so the game's ARENA2 folder (attached
+      // once in production) and the account's login are still there next time. Without
+      // it Playwright hands out a fresh profile each run, which is why a launched
+      // window kept landing on the login and the folder picker.
+      const dir = join(tmpdir(), 'cpu-report-profile');
+      // A persistent launch has no fallback of its own: it asks for the same build
+      // number `launchBrowser` does, so the cached chromium (or CHROME=) is named here
+      // too, or a machine without that exact build cannot use --persist at all.
+      const exe = process.env.CHROME || cachedChromium()?.path;
+      if (!exe) throw new Error('cpu: --persist needs a browser it can name - run `npx playwright install chromium`, or set CHROME=<path to chrome.exe>');
+      browser = await chromium.launchPersistentContext(dir, {
+        executablePath: exe,
+        ...(HEADLESS ? { headless: true, args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] } : { headless: false }),
+        viewport: { width: 1280, height: 720 },
+      });
+      page = browser.pages()[0] ?? await browser.newPage();
+      console.log(`cpu: profile kept at ${dir} - the game's data folder and your login stay between runs`);
+    } else {
+      browser = await launchBrowser(HEADLESS
+        ? { headless: true, args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] }
+        : { headless: false });
+      page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+    }
     tabUrl = URL_;
     watch();
     try {
@@ -551,11 +575,14 @@ try {
         + 'If the game IS running behind it, set READY=true and WARMUP=<seconds> to record anyway.');
     }
   }
-  // An ATTACHED tab is already playing, so nothing is settled and nothing is
-  // warmed up: the recording starts at once, as the header promises. A LAUNCHED
-  // window just finished settling, so it takes the warmup.
+  // An ATTACHED tab is already playing, so nothing is warmed up: the recording starts
+  // at once, as the header promises. A LAUNCHED window takes the warmup - and says so
+  // honestly, because with READY=true nothing was "settled", the clock was simply
+  // started by hand and the player has this long to get into the game.
   if (TAKES_SETTLE && WARMUP) {
-    console.log(`cpu: settled - ${WARMUP} s of warmup, then recording`);
+    console.log(READY === 'true'
+      ? `cpu: ${WARMUP} s warmup - get into the world and play; the recording starts after it`
+      : `cpu: settled - ${WARMUP} s of warmup, then recording`);
     await page.waitForTimeout(WARMUP * 1000);
   }
 
@@ -564,7 +591,7 @@ try {
   const stats = () => page.evaluate(() => (globalThis.__fpsStats ? globalThis.__fpsStats() : null)).catch(() => null);
   const before = await stats();
 
-  // â”€â”€ sample â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ sample ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Profiler.enable');
   await cdp.send('Profiler.setSamplingInterval', { interval: SAMPLING });
@@ -637,7 +664,7 @@ try {
   // that mostly did not happen: the column would read 0.00 beside a "60 fps" header.
   const perFrame = sleeping ? 0 : frames;
 
-  // â”€â”€ the report â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ the report ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
   const modules = new Map();
   for (const r of game) modules.set(r.file, (modules.get(r.file) ?? 0) + r.us);
   const moduleRows = [...modules.entries()].sort((a, b) => b[1] - a[1]);
@@ -647,7 +674,7 @@ try {
   const lines = [
     `# CPU report - ${tabUrl} ${new Date().toISOString()}`,
     '',
-    `${f(SECONDS)} s requested, ${f(wallSeconds)} s profiled at ${SAMPLING} Âµs, ${samples} samples${fps ? `, ${f(fps, 0)} fps (${f(after?.meanMs ?? before?.meanMs ?? 0)} ms a frame, script ${f(after?.scriptMs ?? before?.scriptMs ?? 0)} ms)` : ''}`,
+    `${f(SECONDS)} s requested, ${f(wallSeconds)} s profiled at ${SAMPLING} Ãƒâ€šÃ‚Âµs, ${samples} samples${fps ? `, ${f(fps, 0)} fps (${f(after?.meanMs ?? before?.meanMs ?? 0)} ms a frame, script ${f(after?.scriptMs ?? before?.scriptMs ?? 0)} ms)` : ''}`,
     `Idle: ${f(idleShare)}% of the window${sleeping ? ' - **the page was not drawing for most of it: the numbers below are of the little that ran**' : ''}`,
     `Game code (\`src/\`): **${f(gameShare)}%** of the active time${errors.length ? ` - ${errors.length} page errors` : ''}`,
     ...(heapBefore ? [`Heap: ${fbytes(heapBefore.used)} used of ${fbytes(heapBefore.total)} at the start, ${fbytes(heapAfter?.used ?? heapBefore.used)} of ${fbytes(heapAfter?.total ?? heapBefore.total)} at the end${grew == null ? '' : ` (**${grew >= 0 ? '+' : ''}${fbytes(grew)}** over the window)`}`] : []),
@@ -714,7 +741,12 @@ try {
   // and its frames stopped) - printing an empty table and exiting 0 would read as
   // "the game costs nothing".
   if (!samples) throw new Error('cpu: the profiler returned no samples - the page was not running frames (a breakpoint, or a backgrounded tab)');
-  if (!game.length && !ALL) throw new Error('cpu: no game code was sampled - was the page the game? (see ALL=1, or READY)');
+  if (!game.length && !ALL) {
+    throw new Error('cpu: no game code was sampled. '
+      + 'Usually the window was still at the FRONT DOOR (the menu, a login, the character pick) and never entered a world: '
+      + 'the world doors in the URL (`?world&class=1&shot`) skip that menu, and a plain `--frontdoor` run waits for YOU to walk through it. '
+      + 'Either play into the world inside the warmup, or pass --frontdoor and give --warmup enough seconds, or --all to profile the menu on purpose.');
+  }
 } finally {
   // One exit for every path, including the throws above: a launched browser is
   // closed, a connected one DISCONNECTED (the docs' own behaviour for a browser a
