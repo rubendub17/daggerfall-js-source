@@ -238,6 +238,12 @@ function framePlace(cf) {
   }
   const src = url.match(/\/src\/(.*)$/);
   if (src) return { file: `src/${src[1]}`, line, game: true };
+  // THE BUILT SITE IS THE GAME TOO. On the deployed pages vite bundles the whole
+  // source into /assets/<name>-<hash>.js; there is no /src/ path to match, so the first
+  // cut of this classified every game function as "everything else" and then refused
+  // its own report over a world that was running perfectly ("game code 0.0%").
+  const built = url.match(/\/(assets)\/(.*\.m?js)$/);
+  if (built) return { file: `assets/${built[2]}`, line, col: (cf.columnNumber ?? 0) + 1, game: true };
   const dep = url.match(/\/node_modules\/(?:\.vite\/deps\/)?(.*)$/);
   if (dep) return { file: `node_modules/${dep[1]}`, line, game: false };
   return { file: url.replace(/^https?:\/\/[^/]+/, ''), line, game: false };
@@ -282,6 +288,9 @@ const ms = (us) => us / 1000;
 const f = (n, d = 1) => Number(n).toFixed(d);
 /** Bytes as a reader thinks of them: KB under a megabyte, MB above it. */
 const fbytes = (b) => (b >= 1048576 ? `${f(b / 1048576)} MB` : `${f(b / 1024)} KB`);
+/** Where a row lives. A built bundle keeps every function on line 1, so its column is
+ *  the part that identifies it - `assets/main-ab12.js:1:20481` is a place you can find. */
+const at = (r) => `${r.file}${r.line ? `:${r.line}` : ''}${r.col ? `:${r.col}` : ''}`;
 
 /**
  * The allocation sampler's tree, summed per (function, file, line) as SELF bytes:
@@ -319,11 +328,11 @@ export function aggregateAlloc(profile) {
  *  owns, which is the number that says whether it matters at 60 fps. */
 function table(rows, totalUs, frames) {
   const head = '| self ms | % | ms/frame | function | where |\n|---:|---:|---:|---|---|';
-  const body = rows.map((r) => `| ${f(ms(r.us))} | ${f(pct(r.us, totalUs))} | ${frames ? f(ms(r.us) / frames, 2) : '-'} | \`${r.fn}\` | ${r.file}${r.line ? `:${r.line}` : ''} |`);
+  const body = rows.map((r) => `| ${f(ms(r.us))} | ${f(pct(r.us, totalUs))} | ${frames ? f(ms(r.us) / frames, 2) : '-'} | \`${r.fn}\` | ${at(r)} |`);
   return [head, ...body].join('\n');
 }
 
-// ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ the browser ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+// the browser ---------------------------------------------------------------------------------
 // A Chrome is a Chrome, but THIS checkout's playwright (1.56) asks for one build
 // number and a machine often holds another - `npm run perf` fails the same way.
 // So the bundled browser is tried first, then the cache's newest chromium, then
@@ -591,7 +600,7 @@ try {
   const stats = () => page.evaluate(() => (globalThis.__fpsStats ? globalThis.__fpsStats() : null)).catch(() => null);
   const before = await stats();
 
-  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ sample ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+  // sample --------------------------------------------------------------------------------------
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Profiler.enable');
   await cdp.send('Profiler.setSamplingInterval', { interval: SAMPLING });
@@ -647,6 +656,11 @@ try {
   // for: `ms/frame` would otherwise be scaled by the difference between them.
   const frames = fps ? fps * (wallSeconds || SECONDS) : 0;
   const game = list.filter((r) => r.game);
+  // Everything that is not one of V8's own buckets came out of a JavaScript file -
+  // the game's source, its bundle, or a dependency. That is what the last guard asks
+  // about, because "the game was not running" and "the game was running but bundled"
+  // are different answers and only the first is a fault.
+  const jsRows = list.filter((r) => !r.file.startsWith('('));
   // A percentage of a window a page spent asleep is a percentage of nothing: the
   // sampler counts `(idle)` too, and a paused or backgrounded tab reads as 97%
   // idle with every real frame scaled to a rounding error. So idle is its own
@@ -664,7 +678,7 @@ try {
   // that mostly did not happen: the column would read 0.00 beside a "60 fps" header.
   const perFrame = sleeping ? 0 : frames;
 
-  // ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ the report ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+  // the report ----------------------------------------------------------------------------------
   const modules = new Map();
   for (const r of game) modules.set(r.file, (modules.get(r.file) ?? 0) + r.us);
   const moduleRows = [...modules.entries()].sort((a, b) => b[1] - a[1]);
@@ -674,7 +688,7 @@ try {
   const lines = [
     `# CPU report - ${tabUrl} ${new Date().toISOString()}`,
     '',
-    `${f(SECONDS)} s requested, ${f(wallSeconds)} s profiled at ${SAMPLING} Ãƒâ€šÃ‚Âµs, ${samples} samples${fps ? `, ${f(fps, 0)} fps (${f(after?.meanMs ?? before?.meanMs ?? 0)} ms a frame, script ${f(after?.scriptMs ?? before?.scriptMs ?? 0)} ms)` : ''}`,
+    `${f(SECONDS)} s requested, ${f(wallSeconds)} s profiled at ${SAMPLING} µs, ${samples} samples${fps ? `, ${f(fps, 0)} fps (${f(after?.meanMs ?? before?.meanMs ?? 0)} ms a frame, script ${f(after?.scriptMs ?? before?.scriptMs ?? 0)} ms)` : ''}`,
     `Idle: ${f(idleShare)}% of the window${sleeping ? ' - **the page was not drawing for most of it: the numbers below are of the little that ran**' : ''}`,
     `Game code (\`src/\`): **${f(gameShare)}%** of the active time${errors.length ? ` - ${errors.length} page errors` : ''}`,
     ...(heapBefore ? [`Heap: ${fbytes(heapBefore.used)} used of ${fbytes(heapBefore.total)} at the start, ${fbytes(heapAfter?.used ?? heapBefore.used)} of ${fbytes(heapAfter?.total ?? heapBefore.total)} at the end${grew == null ? '' : ` (**${grew >= 0 ? '+' : ''}${fbytes(grew)}** over the window)`}`] : []),
@@ -706,7 +720,7 @@ try {
       '',
       '| bytes | % | function | where |',
       '|---:|---:|---|---|',
-      ...alloc.list.slice(0, 25).map((r) => `| ${fbytes(r.bytes)} | ${f(pct(r.bytes, alloc.total))} | \`${r.fn}\` | ${r.file}${r.line ? `:${r.line}` : ''} |`),
+      ...alloc.list.slice(0, 25).map((r) => `| ${fbytes(r.bytes)} | ${f(pct(r.bytes, alloc.total))} | \`${r.fn}\` | ${at(r)} |`),
       '',
     ] : []),
     '## Everything else',
@@ -728,10 +742,10 @@ try {
   console.log(`cpu: ${f(wallSeconds)} s profiled, ${samples} samples, ${fps ? `${f(fps, 0)} fps` : 'fps unknown'}, idle ${f(idleShare)}%, game code ${f(gameShare)}% of active time`);
   if (heapBefore) console.log(`cpu: heap ${fbytes(heapBefore.used)} of ${fbytes(heapBefore.total)} -> ${fbytes(heapAfter?.used ?? heapBefore.used)}${grew == null ? '' : ` (${grew >= 0 ? '+' : ''}${fbytes(grew)} over the window)`}`);
   if (sleeping) console.warn('cpu: more than half the window was idle - the page was not drawing frames; is the game paused, or the tab hidden?');
-  for (const r of show) console.log(`  ${f(ms(r.us)).padStart(8)} ms  ${f(pct(r.us, activeUs)).padStart(5)}%  ${r.fn}  ${r.file}${r.line ? `:${r.line}` : ''}`);
+  for (const r of show) console.log(`  ${f(ms(r.us)).padStart(8)} ms  ${f(pct(r.us, activeUs)).padStart(5)}%  ${r.fn}  ${at(r)}`);
   if (alloc) {
     console.log(`cpu: allocated ${fbytes(alloc.total)} - top by function:`);
-    for (const r of alloc.list.slice(0, 8)) console.log(`  ${fbytes(r.bytes).padStart(9)}  ${f(pct(r.bytes, alloc.total)).padStart(5)}%  ${r.fn}  ${r.file}${r.line ? `:${r.line}` : ''}`);
+    for (const r of alloc.list.slice(0, 8)) console.log(`  ${fbytes(r.bytes).padStart(9)}  ${f(pct(r.bytes, alloc.total)).padStart(5)}%  ${r.fn}  ${at(r)}`);
   }
   console.log(`cpu: wrote ${OUT}.md and ${OUT}.cpuprofile (drag the profile into DevTools > Performance > Load profile)`);
   if (snapBytes) console.log(`cpu: wrote ${OUT}.heapsnapshot (${fbytes(snapBytes)}) - DevTools > Memory > Load, then sort by shallow size`);
@@ -741,11 +755,16 @@ try {
   // and its frames stopped) - printing an empty table and exiting 0 would read as
   // "the game costs nothing".
   if (!samples) throw new Error('cpu: the profiler returned no samples - the page was not running frames (a breakpoint, or a backgrounded tab)');
+  // Only "no JavaScript at all" is a fault. A world CAN be running in a bundled build
+  // (`/assets/main-<hash>.js`, the deployed site) and the first cut of this refused
+  // exactly that - a real snowy world, reported as "game code 0.0%".
+  if (!jsRows.length && !ALL) {
+    throw new Error('cpu: not one JavaScript frame was sampled - the page never ran the game at all '
+      + '(still at a menu, a login, or the game data folder prompt?). '
+      + 'Walk into the world inside the warmup, or point the run at the dev server (where the source names are readable).');
+  }
   if (!game.length && !ALL) {
-    throw new Error('cpu: no game code was sampled. '
-      + 'Usually the window was still at the FRONT DOOR (the menu, a login, the character pick) and never entered a world: '
-      + 'the world doors in the URL (`?world&class=1&shot`) skip that menu, and a plain `--frontdoor` run waits for YOU to walk through it. '
-      + 'Either play into the world inside the warmup, or pass --frontdoor and give --warmup enough seconds, or --all to profile the menu on purpose.');
+    console.warn('cpu: the game ran, but from a BUNDLE (/assets/main-*.js): the numbers are real and the function names are minified. Profile the dev server (`npm run dev`, no --base) for readable names.');
   }
 } finally {
   // One exit for every path, including the throws above: a launched browser is
