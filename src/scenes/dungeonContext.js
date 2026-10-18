@@ -7454,9 +7454,14 @@ export async function buildDungeonContext(deps, dfLocation, blocks, climateBaseT
       pick: () => {
         const d = eye ? [-aimed[2], -aimed[6], -aimed[10]] : null;
         if (!d) return null;
+        // ONE LIST FOR BOTH RACERS (FOUND in the 2026-10-18 profile: `dungeonActivationTargets` was
+        // composed twice in this one closure - once for the ground's race, once for the door test -
+        // 0.43 ms a frame between the two). Same frame, same arguments, so the second composition
+        // asked the same question twice.
+        const targets = api.dungeonActivationTargets();
         const ray = raceWinner({
-          ground: pickActivatableHit(eye, d, api.dungeonActivationTargets(), collider),
-          foe: ((ft) => peacefulFoePass(pickActivatableHit(eye, d, ft, collider), ft, doorDistanceOf(eye, d, api.dungeonActivationTargets(), collider), getInteractionMode()))(liveFoeTargets(foes, 'mobileFoe')),   // AUDIT TACT C7: the plaque names the door the press opens
+          ground: pickActivatableHit(eye, d, targets, collider),
+          foe: ((ft) => peacefulFoePass(pickActivatableHit(eye, d, ft, collider), ft, doorDistanceOf(eye, d, targets, collider), getInteractionMode()))(liveFoeTargets(foes, 'mobileFoe')),   // AUDIT TACT C7: the plaque names the door the press opens
           peer: opts.peerHoverPick?.() ?? null,   // PEER-PLAQUE1: another player underground, raced as the F key picks them - off the key's own ray (AUDIT DROPS E3)
         });
         return opts.profHoverPick?.(ray) ?? ray;   // PROF-MENU: a vein or a body the press would take, over the race's winner

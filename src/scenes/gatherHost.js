@@ -1224,11 +1224,17 @@ export function createGatherHost(deps) {
         hud.setPrompt(null); hud.setMeter(null); hud.setChip(null); hud.frame(dt); return;
       }
       // the streamed pixels' witnessed states - a pixel that changed stands again
-      const want = now >= pixelsAt ? [...stood.values()].map((s) => [s.entry.px, s.entry.py]).filter(([x, y]) => (book.pixelWanted ? book.pixelWanted(x, y) : !book.pixel(x, y))) : [];   // GROUND-STALE: and one a harvest answered on
-      if (want.length) pixelsAt = now + 5_000;
+      const pixelsDue = now >= pixelsAt;
+      const want = pixelsDue ? [...stood.values()].map((s) => [s.entry.px, s.entry.py]).filter(([x, y]) => (book.pixelWanted ? book.pixelWanted(x, y) : !book.pixel(x, y))) : [];   // GROUND-STALE: and one a harvest answered on
+      // THE SCAN IS THE CLOCK, not its answer (FOUND in the 2026-10-18 profile: 0.11 ms a frame in a
+      // dungeon with nothing to gather). `pixelsAt` used to move only when the scan WANTED something,
+      // so a settled world asked every stood pixel's state on every frame, forever. A 5 s window asks
+      // once whether or not there is an answer. What that costs: a pixel that STANDS while the scan is
+      // quiet (a harvest stood it, the day turned) is asked at the next window rather than the next
+      // frame - at most 5 s, the wait this site already gives a pixel whose state is being read.
+      if (pixelsDue) pixelsAt = now + 5_000;
       if (want.length) book.askPixels(want).then((changed) => { for (const c of changed ?? []) restandAt(c.x, c.y); }, () => {});
-      else if (dungeon && dungeon.id !== null && now >= pixelsAt && (book.dungeonWanted ? book.dungeonWanted(dungeon.id) : !book.dungeon(dungeon.id))) {   // PROF2: the dungeon's witnessed state; GROUND-STALE: and again after a harvest answered in it
-        pixelsAt = now + 5_000;
+      else if (pixelsDue && dungeon && dungeon.id !== null && (book.dungeonWanted ? book.dungeonWanted(dungeon.id) : !book.dungeon(dungeon.id))) {   // PROF2: the dungeon's witnessed state; GROUND-STALE: and again after a harvest answered in it
         const d = dungeon;
         book.askDungeon(d.id).then((changed) => { if (changed && dungeon === d) standDungeon(); }, () => {});
       }

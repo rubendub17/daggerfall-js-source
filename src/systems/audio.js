@@ -85,6 +85,12 @@ export class AudioEngine {
     // false (music.js:"this._booted = null" learned this at AUDIT 19).
     this._booted = null;
     this._listener = { x: 0, y: 0, z: 0, fx: 0, fy: 0, fz: -1 };
+    // PERF-LISTENER: whether the numbers in `_listener` have ever been WRITTEN to the WebAudio listener.
+    // The pose is kept even across calls that could not write (no context yet, one suspended until the
+    // player's gesture), so a pose that reads the same says nothing about what the listener holds - the
+    // first resume after a gesture must write once more, or every positional source is panned from the
+    // origin while the player stands still (`setListener`).
+    this._listenerWrote = false;
     this._master = null;   // SETT: the SoundVolume bus (see _out)
     // EG-ZH (Elite-Gates.md section 26, THE SPIRE MIX): the gain every one-shot made inside `scaled` is played at (1 out of it)
     this._scale = 1;
@@ -380,6 +386,7 @@ export class AudioEngine {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) { this.enabled = false; return; }
     this.ctx = new AC();
+    this._listenerWrote = false;   // PERF-LISTENER: a new listener holds nothing of the last pose
   }
 
   /** SNDREP1: the decoded replacement from the player's attached sound pack for a classic index, or null - the
@@ -887,18 +894,28 @@ export class AudioEngine {
    *  the handedness is turned at the one door into WebAudio (audioFrame). */
   setListener(pos, forward) {
     const L = this._listener;
+    // THE SAME EAR IS NOT RE-PLACED (FOUND in the 2026-10-18 profile: 42 ms of AudioParam writes over one
+    // window, eight a call, in a dungeon whose camera had not moved). An unchanged pose that the listener
+    // ALREADY HOLDS writes the numbers in force again, so the write is skipped - and only then, because a
+    // pose kept across a call that could not write (no context, or one suspended till the gesture) is not
+    // one the listener holds. Nothing else is skipped: the far one-shots still move with the ear, and one
+    // whose clip has run out is still let go.
+    const still = L.x === pos[0] && L.y === pos[1] && L.z === pos[2] && L.fx === forward[0] && L.fy === forward[1] && L.fz === forward[2];
     [L.x, L.y, L.z] = pos; [L.fx, L.fy, L.fz] = forward;
-    if (!this._ready()) return;
-    const l = this.ctx.listener;
-    const [x, y, z] = audioFrame(pos), [fx, fy, fz] = audioFrame(forward);
-    if (l.positionX) {
-      l.positionX.value = x; l.positionY.value = y; l.positionZ.value = z;
-      l.forwardX.value = fx; l.forwardY.value = fy; l.forwardZ.value = fz;
-      l.upX.value = 0; l.upY.value = 1; l.upZ.value = 0;
-    } else {
-      l.setPosition(x, y, z);                    // Safari fallback
-      l.setOrientation(fx, fy, fz, 0, 1, 0);
+    if (this._ready() && !(still && this._listenerWrote)) {
+      const l = this.ctx.listener;
+      const [x, y, z] = audioFrame(pos), [fx, fy, fz] = audioFrame(forward);
+      if (l.positionX) {
+        l.positionX.value = x; l.positionY.value = y; l.positionZ.value = z;
+        l.forwardX.value = fx; l.forwardY.value = fy; l.forwardZ.value = fz;
+        l.upX.value = 0; l.upY.value = 1; l.upZ.value = 0;
+      } else {
+        l.setPosition(x, y, z);                    // Safari fallback
+        l.setOrientation(fx, fy, fz, 0, 1, 0);
+      }
+      this._listenerWrote = true;   // the listener holds this pose; only now may an equal one be skipped
     }
+    if (!this._ready()) return;
     // DISC17-B: the far one-shots move with the ear, and a clip that has run out is let go
     const far = this._far;
     if (far?.length) {

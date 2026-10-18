@@ -89,13 +89,23 @@ export const localeInfo = (code = _locale) => _infos.get(code) ?? null;
 export const availableLocales = () => [..._infos.values()];
 export const currentLocale = () => _locale;
 
-/** The tags a lookup walks for `code`: the tag, each shorter tag, then the base locale ('pt-BR' -> pt-BR, pt, en). */
+/** The tags a lookup walks for `code`: the tag, each shorter tag, then the base locale ('pt-BR' -> pt-BR, pt, en).
+ *  KEPT PER CODE (FOUND in the 2026-10-18 profile: 17.4 ms of split/slice/join over one window, from every
+ *  string lookup walking it): it is a pure function of the code, and `setLocale` is the only thing that moves
+ *  the default. Frozen, so a reader that would keep it cannot change what the next lookup walks - every caller
+ *  today only iterates it. */
+const _chains = new Map();
 export function localeChain(code = _locale) {
+  const c = String(code || BASE_LOCALE);
+  const held = _chains.get(c);
+  if (held) return held;
   const out = [];
-  const parts = String(code || BASE_LOCALE).split('-');
+  const parts = c.split('-');
   for (let n = parts.length; n > 0; n--) out.push(parts.slice(0, n).join('-'));
   if (!out.includes(BASE_LOCALE)) out.push(BASE_LOCALE);
-  return out;
+  const chain = Object.freeze(out);
+  _chains.set(c, chain);
+  return chain;
 }
 
 /** Select a locale. The list cache is cleared (DFU's is never cleared - a switch in play would keep the old lists)

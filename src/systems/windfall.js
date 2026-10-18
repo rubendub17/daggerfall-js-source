@@ -389,7 +389,11 @@ export function createWindfall({ settings: initial = WINDFALL_BUILT_IN } = {}) {
   function configure(next) {
     if (next === s) return;
     const k = settingsKey(next);
-    if (k === sKey) return;
+    // THE EQUAL-KEY PATH ADOPTS TOO (FOUND in the 2026-10-18 profile: 41.4 ms of JSON.stringify over
+    // one window). The host hands a fresh object with equal values every frame, so `next === s` never
+    // latched and the key was recomputed on every frame forever. `k === sKey` says the values are
+    // already the ones in force, so adopting the object is free - the day and the presentation stay.
+    if (k === sKey) { s = next; return; }
     s = next; sKey = k;
     contextKey = INT_MIN;
     presentationKnown = false;

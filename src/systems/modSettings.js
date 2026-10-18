@@ -9,7 +9,7 @@
 // defaults without a DOM.
 
 import { appStorage } from './appStorage.js';   // the one storage seam - localStorage lives there alone
-import { onlineForcedModSetting, onlineWholeModKey } from './online/onlineLane.js';   // MODS-ONLINE-2: online, the room's ground is forced and every other switch is the player's; REALM P0.2: and the balance mods whole
+import { isOnlinePage, onlineForcedModSetting, onlineWholeModKey, rollingAsTheRoom } from './online/onlineLane.js';   // MODS-ONLINE-2: online, the room's ground is forced and every other switch is the player's; REALM P0.2: and the balance mods whole; PERF-MODCACHE: the page's online answer and a room's base roll, which are the two scopes a kept switch is keyed on
 import { FOOT_SKIN_COUNT, CLASS_SKINS, classSkinLabel } from '../player/classSkins.js';   // SKIN2: the class skins past the mod's sixteen
 import { t, localizedText } from './textManager.js';   // L10N4: every setting's description and option names in the player's language, read when they are read; DFU's own key where it has the same word
 
@@ -1838,13 +1838,43 @@ export function onlineModSetting(vendor, key, search) {
   return def && onlineWholeModKey(vendor, key, search) ? def.default : undefined;
 }
 
+// A RESOLVED SWITCH IS NOT PER-FRAME (FOUND in the 2026-10-18 profile: `declaredKey` cost 0.12 ms a
+// frame and `modSettingsOf` 0.07 on top of it, from nine readers - the handheld torches alone
+// re-resolved ~50 keys on every frame - for a store whose resolved answers change in only two ways).
+// THE TWO. One: a write, which moves `_generation` (setModSetting, _resetModSettings). Two: the
+// SCOPE a read happens in - the page's online answer, and a room's base roll, where every mod reads
+// its shipped default for the length of the roll without a write (onlineLane.js `asTheRoom`,
+// PARTY-LOOT: a base rolled under one player's switches is a different list on their machine). Both
+// are part of the key rather than a latch, so a read inside a roll cannot be answered from outside
+// it, and the reason systems/pageQuery.js gives for keying on the string holds for the URL one: a
+// forced key reads the URL, and the URL moves once, before the world boots (publishBootParams).
+let _cacheGen = -1;
+let _cacheUrl = -1;
+const _switchesOf = new Map();   // `${scope}\0${vendor}` -> the resolved switches
+const _switchOne = new Map();    // `${scope}\0${vendor}\0${key}` -> the resolved value
+let _scope = '';   // the scope of the read in flight, `cacheLive`'s answer - `${online}${room}`
+function cacheLive() {
+  const gen = _generation, url = isOnlinePage() ? 1 : 0;
+  if (gen !== _cacheGen || url !== _cacheUrl) {
+    _cacheGen = gen; _cacheUrl = url;
+    _switchesOf.clear(); _switchOne.clear();   // the scope rides the keys; only a write or the URL empties the maps
+  }
+  _scope = `${url}${rollingAsTheRoom() ? 1 : 0}`;
+  return _scope;
+}
+
 export function modSetting(vendor, key) {
   const def = declaredKey(vendor, key);
   if (!def) throw new Error(`modSetting: ${vendor}/${key} is not a declared switch`);
+  const scope = cacheLive();
+  const ck = `${scope}\u0000${vendor}\u0000${key}`;
+  if (_switchOne.has(ck)) return _switchOne.get(ck);
   const forced = onlineModSetting(vendor, key);   // MODS-ONLINE-2: online, a key the room's ground depends on reads the room's value and the store is not written; REALM P0.2: and a balance mod's every key its shipped default
-  if (forced !== undefined) return forced;
+  if (forced !== undefined) { _switchOne.set(ck, forced); return forced; }
   const v = load()[vendor]?.[key];
-  return v === undefined ? def.default : coerce(def, v);
+  const resolved = v === undefined ? def.default : coerce(def, v);
+  _switchOne.set(ck, resolved);
+  return resolved;
 }
 
 /**
@@ -1870,9 +1900,13 @@ export function storedModSetting(vendor, key) {
 export function modSettingsOf(vendor) {
   const keys = MOD_SETTINGS[vendor]?.keys;
   if (!keys) throw new Error(`modSettingsOf: ${vendor} is not a vendored mod with switches`);
+  const scope = cacheLive();
+  const held = _switchesOf.get(`${scope}\u0000${vendor}`);
+  if (held) return { ...held };   // a caller's own copy, as this door always handed out - the map's object is not editable by one
   const out = {};
   for (const k of Object.keys(keys)) out[k] = modSetting(vendor, k);
-  return out;
+  _switchesOf.set(`${scope}\u0000${vendor}`, out);
+  return { ...out };
 }
 
 /** AUDIT 68 S15-eotb-settings-snapshot: DFU's ModSettingsChange, as a

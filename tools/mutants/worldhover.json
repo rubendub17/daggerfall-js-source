@@ -549,7 +549,7 @@
   {
     "name": "WORLD-HOVER-the-dungeon-plaque-stops-racing-live-foes",
     "file": "src/scenes/dungeonContext.js",
-    "old": "          foe: ((ft) => peacefulFoePass(pickActivatableHit(eye, d, ft, collider), ft, doorDistanceOf(eye, d, api.dungeonActivationTargets(), collider), getInteractionMode()))(liveFoeTargets(foes, 'mobileFoe')),   // AUDIT TACT C7: the plaque names the door the press opens\n",
+    "old": "          foe: ((ft) => peacefulFoePass(pickActivatableHit(eye, d, ft, collider), ft, doorDistanceOf(eye, d, targets, collider), getInteractionMode()))(liveFoeTargets(foes, 'mobileFoe')),   // AUDIT TACT C7: the plaque names the door the press opens\n",
     "new": "",
     "tests": [
       "test/systems/worldhover.test.js"

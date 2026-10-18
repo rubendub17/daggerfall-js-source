@@ -1172,15 +1172,24 @@ export const mintIdentity = (io, character = null) => call(io, '/v1/auth/token',
  * can throw in a private window, and a sign-in screen that throws
  * while deciding whether to show itself is a menu that will not open.
  */
+// THE PARSE IS KEPT BETWEEN CALLS (FOUND in the 2026-10-18 profile: 0.09 ms a frame, and `slot()`
+// below is the cache KEY of a counting set, so one read paid for two). The raw string is still read -
+// that is a getItem, and it is what makes another tab's write, or a test's, visible at once - but a
+// string that has not changed is not parsed again. keepSession and forgetSession drop the memo, so a
+// sign-in or a sign-out is never answered from a stale parse.
+let _sessionMemo = null;   // { storage, raw, value }
 export function storedSession(storage) {
   try {
     const raw = storage?.getItem?.(SESSION_KEY);
-    if (!raw) return null;
+    if (_sessionMemo && _sessionMemo.storage === storage && _sessionMemo.raw === raw) return _sessionMemo.value;
+    if (!raw) { _sessionMemo = { storage, raw: null, value: null }; return null; }
     const v = JSON.parse(raw);
     // A SHAPE, NOT A TRUTH. This says the value is one we wrote, not
     // that the service still honours it - only a call can say that, and
     // `auth` is what it says when the answer is no.
-    return typeof v?.secret === 'string' && v.secret ? v : null;
+    const value = typeof v?.secret === 'string' && v.secret ? v : null;
+    _sessionMemo = { storage, raw, value };
+    return value;
   } catch { return null; }
 }
 
@@ -1191,6 +1200,7 @@ export function storedSession(storage) {
 export function keepSession(storage, { id, name, kind, sessionId, secret, glyphs, aura, nameAsAt }) {
   try {
     storage?.setItem?.(SESSION_KEY, JSON.stringify({ id, name, kind, sessionId, secret, glyphs, aura, nameAsAt }));   // SHADOW-FANG: `glyphs` when the service has stated them (adoptIdentity) - JSON leaves it out otherwise; WB9g: `aura` likewise; NAME-AS: `nameAsAt` likewise
+    _sessionMemo = null;   // a write is a new answer, never the old parse
     return true;
   } catch { return false; }
 }
@@ -1271,7 +1281,7 @@ export function adoptIdentity(storage, { name, kind, glyphs, glyphsOff, aura, na
  *  is not a session - keeping it would make every later call fail the
  *  same way with nothing on screen explaining why. */
 export function forgetSession(storage) {
-  try { storage?.removeItem?.(SESSION_KEY); return true; } catch { return false; }
+  try { storage?.removeItem?.(SESSION_KEY); _sessionMemo = null; return true; } catch { return false; }
 }
 
 /** SCALE2 (2026-09-30, the scaling audit): how long a minted token is handed to OTHER rooms before a fresh one is
