@@ -753,7 +753,15 @@ uniform vec3 uBBSun;
 flat out float vBBSunVis;   // LA-COST3: the sun map's word at the flat's base, one value for the whole quad
 ${SHADOW_GLSL}`,
   main: `
-  vBBSunVis = dot(uBBSun, uBBSun) > 0.0 ? (uMesh > 0.5 ? sunShadowAt(vBBBase + vec3(0.0, 0.5, 0.0), vec3(0.0, 1.0, 0.0)) : sunShadowSoftAt(vBBBase + vec3(0.0, 0.5, 0.0), vec3(0.0, 1.0, 0.0), uSize.y)) : 1.0;   // LA-COST3: EL2's point, TREES1's kernel, PERF-SUN2's gate; AUDIT FLICKER S1: its height, off its own card; AUDIT LPT B4: a low-poly tree's every VERTEX runs this, so one tap at its root`,
+  // PERF-FLAT-SUN (2026-10-19, the audit): THE READ RUNS ON THE TWO VERTICES THAT ARE READ. vBBSunVis is a flat out, so
+  // the fragment stage takes it from the PROVOKING vertex alone - and by the index order createBillboardBatch (and
+  // _bbArenaIndices) writes, (b, b+2, b+1) and (b, b+3, b+2), those provokers are corners 1 and 2 of BB_CORNERS, the two
+  // TOP ones (aCorner.y = +0.5) under GLES3's default last-vertex convention. The read point is corner-independent
+  // (the quad's base), so the two compute the SAME value and no diagonal seam is possible. This halves the flat vertex
+  // stage's shadow fetches - 4 corners a quad to 2 - for one condition. A low-poly TREE keeps every vertex (uMesh > 0.5:
+  // there aCorner is its uv, not a corner) and the whole-quad value is still what the fragments read.
+  vBBSunVis = 1.0;
+  if (uMesh > 0.5 || aCorner.y > 0.0) vBBSunVis = dot(uBBSun, uBBSun) > 0.0 ? (uMesh > 0.5 ? sunShadowAt(vBBBase + vec3(0.0, 0.5, 0.0), vec3(0.0, 1.0, 0.0)) : sunShadowSoftAt(vBBBase + vec3(0.0, 0.5, 0.0), vec3(0.0, 1.0, 0.0), uSize.y)) : 1.0;   // LA-COST3: EL2's point, TREES1's kernel, PERF-SUN2's gate; AUDIT FLICKER S1: its height, off its own card; AUDIT LPT B4: a low-poly tree's every VERTEX runs this, so one tap at its root`,
 });
 
 /** MAC-BUG W6 (2026-09-20, Mac: "super dark coloring instead of red") -

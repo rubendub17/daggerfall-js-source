@@ -68,7 +68,13 @@ export function perfLine(gpuMs, counts) {
   // could not say whether they were a cache rebuilding or a caster that moved - the two need different fixes. Four more
   // columns answer it: static faces (a slot's cache rebuilt), dynamic (the moving casters on top), the blits that copy
   // the cache into the live layers, and the slots served whole from the cache.
-  if (c.shadows) parts.push(`faces ${c.shadows.staticFaces ?? 0}s/${c.shadows.dynFaces ?? 0}d`, `blits ${c.shadows.blits ?? 0}`, `cached ${c.shadows.cachedSlots ?? 0}`);
+  // PERF-SHADOW-COUNTS (2026-10-19, the shadow audit): the pass keeps fourteen per-frame counters and this line printed
+  // eleven, so a reader could not reconcile "66 faces" against "18 dynamic + 12 cached". The three that were counted and
+  // never shown are the ones that explain it: a whole cube redrawn because its caster MOVED, and the lo tier's own slots
+  // and faces.
+  if (c.shadows) parts.push(`faces ${c.shadows.staticFaces ?? 0}s/${c.shadows.dynFaces ?? 0}d/${c.shadows.moverFaces ?? 0}m`, `blits ${c.shadows.blits ?? 0}`, `cached ${c.shadows.cachedSlots ?? 0}`, `lo ${c.shadows.loSlots ?? 0}s/${c.shadows.loFaces ?? 0}f`);
+  // DISC29/LA-SHADOW: the sun's three cascades, each its own count - a bare sum cannot say which one to hold back.
+  if (c.shadows && c.shadows.sunC0 != null) parts.push(`sun cascades ${c.shadows.sunC0 ?? 0}/${c.shadows.sunC1 ?? 0}/${c.shadows.sunC2 ?? 0}`);
   if (c.air) parts.push(`emit ${c.air.emitDraws ?? 0}`, `glares ${c.air.glares ?? 0}`, `shafts ${c.air.shafts ? 1 : 0}`);
   // DRAW-SITES (2026-10-19): where the renderer's own draws went, so `draws 1226` stops being one number. `other` is
   // everything the named families do not cover (decals, sprites, snow, panes, the glow, particles). It is NOT clamped:
@@ -77,7 +83,9 @@ export function perfLine(gpuMs, counts) {
     const s = c.sites;
     const named = (s.flat | 0) + (s.mesh | 0) + (s.terr | 0) + (s.water | 0) + (s.screen | 0) + (s.char | 0);
     const other = (c.draws | 0) - named;
-    parts.push(`sites flat ${s.flat | 0}d/${s.flatKeys | 0}k/${s.flatOrigins | 0}o`, `mesh ${s.mesh | 0}`, `terr ${s.terr | 0}`, `water ${s.water | 0}`, `char ${s.char | 0}d/${s.charRanges | 0}r`, `screen ${s.screen | 0}`, `other ${other}`);
+    // DRAW-SITES: the suffixes are spelled out (dr = draws, q = quads, key = texture keys, pl = place uploads, tri =
+    // triangles), because a bare "93k" reads as ninety-three thousand and cost one reviewer an afternoon.
+    parts.push(`sites flat ${s.flat | 0}dr/${s.flatQuads | 0}q/${s.flatKeys | 0}key/${s.flatOrigins | 0}pl`, `mesh ${s.mesh | 0}dr/${s.meshTris | 0}tri`, `terr ${s.terr | 0}`, `water ${s.water | 0}`, `char ${s.char | 0}dr/${s.charRanges | 0}r`, `screen ${s.screen | 0}`, `other ${other}`);
   }
   return `[perf] ${parts.join(' | ')}`;
 }

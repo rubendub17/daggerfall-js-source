@@ -1146,7 +1146,7 @@ export class ShadowPass {
     this._sunScaleK = 1;   // AUDIT DEEP R-3: the cascades' scale the maps were last drawn at
     this.kind = null;
     /** per-frame counts, for a probe */
-    this.stats = { records: 0, sunDraws: 0, pointDraws: 0, culled: 0, cascadesDrawn: 0, facesDrawn: 0, staticFaces: 0, dynFaces: 0, moverFaces: 0, blits: 0, cachedSlots: 0, loSlots: 0, loFaces: 0, selfLamps: 0 };   // SC1: the faces split, the blits, the slots served from the cache; DISC15: the lo tier's slots and faces; LIGHT-ID: the faces of lights that moved, drawn whole
+    this.stats = { records: 0, sunDraws: 0, sunC0: 0, sunC1: 0, sunC2: 0, pointDraws: 0, culled: 0, cascadesDrawn: 0, facesDrawn: 0, staticFaces: 0, dynFaces: 0, moverFaces: 0, blits: 0, cachedSlots: 0, loSlots: 0, loFaces: 0, selfLamps: 0 };   // SC1: the faces split, the blits, the slots served from the cache; DISC15: the lo tier's slots and faces; LIGHT-ID: the faces of lights that moved, drawn whole
     // AUDIT 637 B7: `culled` counts what a replay's own tests culled. A lantern face walks its candidates alone (PERF-SHADOW1),
     // so what it cannot reach it never asks - and never counts: the perf meter's `culled` is the sun's, the air's and the
     // faces' own culls of what the cube kept, smaller than it read before the pre-pass for the same frame.
@@ -1804,7 +1804,9 @@ export class ShadowPass {
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.sunFbos[c]);
         gl.viewport(0, 0, SHADOW_SUN_SIZE, SHADOW_SUN_SIZE);
         gl.clear(gl.DEPTH_BUFFER_BIT);
-        this.stats.sunDraws += this.replay(f, this.sunVP[c], null, false, SHADOW_CASCADE_MIN_RADIUS_TEXELS * sunTexelWorld(c, k), sunTexelWorld(c, k), REPLAY_ALL, true, sunCand ? sunCand[c] : null);   // F5: the small solids; WEEDS1: and the small SPRITES, which F5's sphere test cannot see casters skipped by the cascade's texel
+        const drew = this.replay(f, this.sunVP[c], null, false, SHADOW_CASCADE_MIN_RADIUS_TEXELS * sunTexelWorld(c, k), sunTexelWorld(c, k), REPLAY_ALL, true, sunCand ? sunCand[c] : null);
+        this.stats.sunDraws += drew;
+        if (c === 0) this.stats.sunC0 += drew; else if (c === 1) this.stats.sunC1 += drew; else this.stats.sunC2 += drew;   // PERF-SHADOW-COUNTS: which cascade is the work   // F5: the small solids; WEEDS1: and the small SPRITES, which F5's sphere test cannot see casters skipped by the cascade's texel
         this._sunDrawn[c] = 1; this.stats.cascadesDrawn++;
       }
       for (let c = 0; c < SHADOW_CASCADES.length; c++) { this.sunParams[c] = SHADOW_CASCADES[c] * k; this.sunTexel[c] = sunTexelWorld(c, k); this._sunVPFlat.set(this.sunVP[c], c * 16); }

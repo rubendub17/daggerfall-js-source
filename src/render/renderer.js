@@ -24,9 +24,16 @@ import { frameTarget, setFrameTarget } from './renderTarget.js';   // RW1: the v
 import { CLIP_SENTINEL } from '../world/terrain/terrainSurface.js';   // FAR-CLIP1: the byte the terrain's clip variant discards - the TileMap format's module, already in this file's closure (waterCorners.js)
 /** AUDIT TECH-FX: the screen offset before any is set - one, frozen (Renderer `screenOffset`). */
 const NO_SCREEN_OFFSET = Object.freeze([0, 0]);
+/** PERF-PROBE (2026-10-19): `?flatsun=off` gives the billboard program a zero sun, so the lane's per-vertex shadow
+ *  kernel and the fragment's sun term both vanish. A MEASUREMENT door: the picture loses the sun on every flat card, and
+ *  the world zone's drop is the ceiling of what that read costs. Read once a page, like every other door. */
+const FLAT_SUN_OFF = (() => { try { return /[?&]flatsun=off/.test(globalThis.location?.search ?? ''); } catch { return false; } })();
 /** DRAW-SITES: every family a draw site increments, seeded by name in beginFrame - the one list the reset and the line
  *  both speak (a key missing here reads NaN through `| 0`, a silent zero in the census). */
-const SITE_KEYS = Object.freeze(['flat', 'flatKeys', 'flatOrigins', 'mesh', 'terr', 'water', 'screen', 'char', 'charRanges', 'snow']);
+// DRAW-SITES: every family a draw site increments, seeded by name in beginFrame. `flatQuads` and `meshTris` are the
+// GEOMETRY half's own numbers (2026-10-19, the audits): the frame's other half costs ~20 ms and nothing in the renderer
+// counted the quads or the triangles that pay it.
+const SITE_KEYS = Object.freeze(['flat', 'flatKeys', 'flatOrigins', 'flatQuads', 'mesh', 'meshTris', 'terr', 'water', 'screen', 'char', 'charRanges', 'snow']);
 
 const VS = `#version 300 es
 layout(location=0) in vec3 aPos;
@@ -8183,7 +8190,10 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
           am[1] + mc[1] * this._moonScale * 0.5,
           am[2] + mc[2] * this._moonScale * 0.5
         );
-        gl.uniform3f(this.bbUSun, sc[0] * this._sunScale * 0.5, sc[1] * this._sunScale * 0.5, sc[2] * this._sunScale * 0.5);   // VC4: the sun's half, shadowed in the shader
+        // PERF-PROBE: `?flatsun=off` hands the program a zero sun, which is the very gate the lane's vertex shader reads -
+        // the per-vertex kernel and the fragment's sun term both stand down, and the frame's difference is their cost.
+        if (FLAT_SUN_OFF) gl.uniform3f(this.bbUSun, 0, 0, 0);
+        else gl.uniform3f(this.bbUSun, sc[0] * this._sunScale * 0.5, sc[1] * this._sunScale * 0.5, sc[2] * this._sunScale * 0.5);   // VC4: the sun's half, shadowed in the shader
       } else {
         gl.uniform3f(this.bbUTint, 1, 1, 1);
         gl.uniform3f(this.bbUSun, 0, 0, 0);
@@ -8317,7 +8327,9 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       this._bindVao(b.vao);
       gl.drawElements(gl.TRIANGLES, b.indexCount, gl.UNSIGNED_INT, b._ibOff | 0);   // PERF-ARENA: a still batch's range of its arena's indices
       this.stats.draws++;
-      (this.stats.sites ??= {}).flat++;
+      const sites = this.stats.sites ??= {};
+      sites.flat++;
+      sites.flatQuads = (sites.flatQuads | 0) + (b._quads | 0);   // DRAW-SITES: the geometry half's own number - the quads this draw carried
     };
     gl.uniform1i(this.bbUSpectral, 0);
     gl.uniform4f(this.bbUConceal, 0, 0, 0, 0);   // ECV1: plain unless a batch says otherwise
@@ -8600,11 +8612,15 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
         const range = wireMesh.ranges[smi];
         gl.drawElements(gl.LINES, range.count, gl.UNSIGNED_INT, range.start * 4);
         this.stats.draws++;   // F50: every gl.draw* site carries its own count
-        (this.stats.sites ??= {}).mesh++;
+        const sites = this.stats.sites ??= {};
+        sites.mesh++;
+        sites.meshTris = (sites.meshTris | 0) + (sm.primitiveCount | 0);   // DRAW-SITES: the triangles this sub-mesh drew
       } else {
         gl.drawElements(gl.TRIANGLES, sm.primitiveCount * 3, gl.UNSIGNED_INT, sm.startIndex * 4);
         this.stats.draws++;
-        (this.stats.sites ??= {}).mesh++;
+        const sites = this.stats.sites ??= {};
+        sites.mesh++;
+        sites.meshTris = (sites.meshTris | 0) + (sm.primitiveCount | 0);   // DRAW-SITES: the triangles this sub-mesh drew
       }
     }
     if (this._rwModeUp > 0 || this._rwCutUp > 0) this._rwRest();   // RW1: no other draw on the mesh program inherits a window mode or a cutout

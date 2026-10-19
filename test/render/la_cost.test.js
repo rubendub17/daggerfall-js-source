@@ -514,6 +514,11 @@ test('LA-COST3: THE FLAT\'S SUN IS READ ONCE A QUAD - the lane\'s billboard vert
   const corners = [[-0.5, -0.5], [-0.5, 0.5], [0.5, 0.5], [0.5, -0.5]];
   const fs = glslFunctions(EL_BB_FS, U, { fp32: true });
   const seen = new Set();
+  // PIN MOVED (PERF-FLAT-SUN, 2026-10-19): the read now runs on the TWO PROVOKING CORNERS only - the fragment stage takes
+  // a flat output's value from the provoking vertex, which by createBillboardBatch's index order ((b,b+2,b+1) and
+  // (b,b+3,b+2)) are corners 1 and 2, the two TOP ones. What the law has to hold is that every corner the GPU READS
+  // carries the quad's value; the two it never reads are left at their initial 1.0.
+  const PROVOKERS = [1, 2];   // BB_CORNERS' [-0.5,0.5] and [0.5,0.5]
   for (let q = 0; q < 60; q++) {
     const aCenter = [Math.round((rnd() * 60 - 30) * 64) / 64, Math.round(rnd() * 2 * 64) / 64, Math.round((rnd() * 60 - 40) * 64) / 64];
     const uOrigin = [Math.round(rnd() * 8 * 64) / 64, 0, Math.round(rnd() * 8 * 64) / 64], uSway = q % 2 ? 0.7 : 0;
@@ -525,10 +530,11 @@ test('LA-COST3: THE FLAT\'S SUN IS READ ONCE A QUAD - the lane\'s billboard vert
       vis.push(f.globals.vBBSunVis);
       vBBBase = f.globals.vBBBase;
     }
-    assert.ok(vis.every((v) => v === vis[0]), `quad ${q}: the four corners agree (${vis})`);
+    assert.ok(PROVOKERS.every((i) => vis[i] === vis[PROVOKERS[0]]), `quad ${q}: the two read corners agree (${vis})`);
+    assert.ok(PROVOKERS.every((i) => corners[i][1] > 0), 'and they are the two TOP corners, which is what makes them provokers');
     const base = vBBBase.map((x, i) => Math.fround(x + [0, 0.5, 0][i]));   // EL_BB_FS's `vec3 base = vBBBase + vec3(0.0, 0.5, 0.0);`
-    assert.equal(vis[0], fs.sunShadowSoftAt(base, [0, 1, 0], U.uSize[1]), `quad ${q}: the fragment's old read at the base, to the bit (AUDIT FLICKER S1: with the flat's height)`);
-    seen.add(vis[0] === 1 ? 'lit' : vis[0] === 0 ? 'dark' : 'edge');
+    assert.equal(vis[PROVOKERS[0]], fs.sunShadowSoftAt(base, [0, 1, 0], U.uSize[1]), `quad ${q}: the fragment's old read at the base, to the bit (AUDIT FLICKER S1: with the flat's height)`);
+    seen.add(vis[PROVOKERS[0]] === 1 ? 'lit' : vis[PROVOKERS[0]] === 0 ? 'dark' : 'edge');
   }
   assert.deepEqual([...seen].sort(), ['dark', 'edge', 'lit'], 'the quads landed lit, dark and on an edge - the law was asked of all three');
   // night: the gate is the vertex stage's too
