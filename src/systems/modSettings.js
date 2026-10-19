@@ -1864,11 +1864,15 @@ function cacheLive() {
 }
 
 export function modSetting(vendor, key) {
-  const def = declaredKey(vendor, key);
-  if (!def) throw new Error(`modSetting: ${vendor}/${key} is not a declared switch`);
+  // THE KEPT ANSWER IS ASKED FIRST, the declared key second: `declaredKey` is two `Object.hasOwn` calls
+  // and it was still spent on every cached read (104 ms of the 2026-10-19 profile), so a hot reader paid
+  // for the resolution it was not doing. A miss resolves the key, which is also where an undeclared one
+  // is refused - an undeclared key resolves nothing, so it is never kept.
   const scope = cacheLive();
   const ck = `${scope}\u0000${vendor}\u0000${key}`;
   if (_switchOne.has(ck)) return _switchOne.get(ck);
+  const def = declaredKey(vendor, key);
+  if (!def) throw new Error(`modSetting: ${vendor}/${key} is not a declared switch`);
   const forced = onlineModSetting(vendor, key);   // MODS-ONLINE-2: online, a key the room's ground depends on reads the room's value and the store is not written; REALM P0.2: and a balance mod's every key its shipped default
   if (forced !== undefined) { _switchOne.set(ck, forced); return forced; }
   const v = load()[vendor]?.[key];
@@ -1901,12 +1905,18 @@ export function modSettingsOf(vendor) {
   const keys = MOD_SETTINGS[vendor]?.keys;
   if (!keys) throw new Error(`modSettingsOf: ${vendor} is not a vendored mod with switches`);
   const scope = cacheLive();
-  const held = _switchesOf.get(`${scope}\u0000${vendor}`);
-  if (held) return { ...held };   // a caller's own copy, as this door always handed out - the map's object is not editable by one
+  const ck = `${scope}\u0000${vendor}`;
+  const held = _switchesOf.get(ck);
+  if (held) return held;
   const out = {};
   for (const k of Object.keys(keys)) out[k] = modSetting(vendor, k);
-  _switchesOf.set(`${scope}\u0000${vendor}`, out);
-  return { ...out };
+  // ONE OBJECT, KEPT AND FROZEN. This door used to hand out a fresh object, and a fresh object per call
+  // is 50 properties copied - 219 ms of the 2026-10-19 profile, because systems/ambientText.js asks it
+  // once per KEY. The frozen object is the store's own answer for this scope, `flattenModPreset`'s
+  // idiom; a reader that would write to it now fails loudly instead of quietly throwing its edit away.
+  const resolved = Object.freeze(out);
+  _switchesOf.set(ck, resolved);
+  return resolved;
 }
 
 /** AUDIT 68 S15-eotb-settings-snapshot: DFU's ModSettingsChange, as a

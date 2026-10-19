@@ -780,16 +780,21 @@ try {
   // character guide or a paused game draws a handful of frames with no host stamping any,
   // and dividing the game's JS by eleven frames of a paused page names a bottleneck that
   // is not there (measured on the new-character guide: 1 fps, "game JS 122 ms", reported
-  // as JavaScript-bound). The split is read only when the window was actually drawing.
-  const notDrawing = sleeping || !frames || frames < 20;
+  // as JavaScript-bound).
+  // THE IDLE SHARE IS NOT THE TEST. A frame waiting on the GPU leaves the main thread idle
+  // by definition, so a GPU-bound window reads as half asleep - the 2026-10-19 town profile
+  // (19 fps, GPU 53.4 ms, idle 51.9%) lost its split to exactly that, and the reader was told
+  // "the page was not drawing steadily" about a page drawing a town. Drawing is what the
+  // counter and its frame count say, not what the sampler's idle column says.
+  const notDrawing = !frames || frames < 20 || fps == null || fps < 5;
   const bottleneck = notDrawing ? null : bottleneckOf(perf?.gpuMs ?? null, jsPerFrame);
   // WHY THE SPLIT WAS NOT READ, WHEN IT WAS NOT. Three different nulls, three different sentences: a
   // browser refusing its timer, a page with no `&fps` counter, and a window that was not drawing are
   // not the same fault, and blaming "the page was not drawing" for a refused timer sends a reader
   // after a paused game that never existed.
   const whyNoSplit = notDrawing
-    ? ['the page was not drawing steadily (its idle share and its frame time say so), so a GPU mean and a',
-      'JavaScript mean are of different things - record inside a running world before trusting a split.']
+    ? ['the page was not drawing a world (its own fps counter read under 5, or the window held fewer than 20',
+      'frames), so a GPU mean and a JavaScript mean are of different things - record inside a running world.']
     : !perf
       ? ['no `[perf]` line reached this report, so nothing here can say whether the frame is the GPU or the',
         'JavaScript - the profile can only see the main thread.']
