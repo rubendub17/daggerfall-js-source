@@ -630,6 +630,55 @@ ${RW_MAIN_ROOM}
   }
 }`;
 
+/** EARLY-Z (2026-10-20): THE MESH PROGRAM'S NO-KILL TWIN. A `discard`
+ *  anywhere in a fragment shader costs that shader the EARLY depth test: on
+ *  ANGLE's D3D11 backend the depth test then runs AFTER the shader, so a
+ *  fragment standing behind a nearer one is shaded in full and thrown away
+ *  afterwards. Measured on this box in a dungeon: 96.64 ms of world pass over
+ *  9,079 triangles and 220 draws - about 105 ns per screen pixel, on a picture
+ *  that is nearly empty, paid again for every layer the room's own walls hide.
+ *
+ *  Every kill in EL_MESH_FS is a UNIFORM-GATED arm: the automap's slice plane,
+ *  a fading ship's dissolve, a cutout picture's hole, the view out's pane, an
+ *  interior's glass. A world frame that asks for none of them draws the same
+ *  fragments with the same arithmetic and no kill instruction at all, and the
+ *  driver's own early depth test then rejects the hidden layers before the
+ *  shader runs. This shader is that: EL_MESH_FS with those five arms taken out.
+ *
+ *  The arms are stripped HERE, from the shipped text, so the lit shader cannot
+ *  drift from its twin - an arm that a rename left behind throws instead of
+ *  silently costing the depth test again. The renderer picks the twin per
+ *  bundle (Renderer._meshVariant, gated on a world frame with no slice, no
+ *  dissolve, no pane and no window or cutout sub-mesh), so a draw that needs
+ *  any of those keeps EL_MESH_FS and the picture is the same either way.
+ *
+ *  DISSOLVE_GLSL's own `discard`, in dissolveCut()'s body, goes with them: the
+ *  twin never calls it, and a kill in an uncalled function is dead code the
+ *  driver drops - but the text is stripped anyway and the result is CHECKED
+ *  for the word, because a kill left in the source is the one thing that would
+ *  quietly hand the cost straight back. */
+const EL_NO_KILL_ARMS = [
+  ["the view out's pane", /\r?\n[ \t]*if \(uPaneOn > 0\.5[^\r\n]*discard;[^\r\n]*/],
+  ["the automap's slice", /\r?\n[ \t]*if \(amMode >= 3\) \{ if \(vWorldPos\.y <= uClipY\) discard; \}\r?\n[ \t]*else if \(vWorldPos\.y > uClipY\) discard;/],
+  ["a ship's dissolve", /\r?\n[ \t]*dissolveCut\(\);[^\r\n]*/],
+  ["a cutout picture's hole", /\r?\n[ \t]*if \(uCutout > 0\.5 && tex\.a < 0\.5\) discard;[^\r\n]*/],
+  ["an interior's glass", /\r?\n[ \t]*if \(uWinMode > 2\.5 && rwGlass > 0\.5 && rwInRect\(gl_FragCoord\.xy\)\) discard;[^\r\n]*/],
+  ["dissolveCut()'s own kill", /\r?\n[ \t]*if \(uDissolveCut > 0\.0[^\r\n]*discard;[^\r\n]*/],
+];
+export const EL_MESH_FS_PLAIN = (() => {
+  let fs = EL_MESH_FS;
+  for (const [what, arm] of EL_NO_KILL_ARMS) {
+    const out = fs.replace(arm, '');
+    if (out === fs) throw new Error(`EL_MESH_FS_PLAIN: ${what} is not in EL_MESH_FS any more - its no-kill twin would still kill`);
+    fs = out;
+  }
+  // The one claim this shader exists to make, checked rather than trusted: a
+  // kill left anywhere in the text costs the early depth test whatever branch
+  // guards it, and that is exactly the cost it was built to give back.
+  if (/\bdiscard\b/.test(fs)) throw new Error('EL_MESH_FS_PLAIN: a discard survived the strip - the depth test would not come back');
+  return fs;
+})();
+
 /** The billboard fragment shader of the lane - the classic BB_FS's
  *  cutout, spectral, conceal and emission terms, lit on the lane's
  *  pipeline. uTint and uBBSun arrive decoded like every other colour. */
@@ -1183,6 +1232,7 @@ void main() {
 export const EL_LANE = Object.freeze({
   key: 'enhanced-lighting',
   meshFs: EL_MESH_FS,
+  meshFsPlain: EL_MESH_FS_PLAIN,   // EARLY-Z: the same mesh shader with no kill arm - a world frame that needs none draws on it and keeps its early depth test
   bbFs: EL_BB_FS,
   bbVs: EL_BB_VS_EXT,   // LA-COST3: the flat's sun read once a quad - EL_BB_FS reads vBBSunVis, which this writes
   terrainFs: EL_TERRAIN_FS,

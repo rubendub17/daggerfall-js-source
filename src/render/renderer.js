@@ -1677,6 +1677,14 @@ export class Renderer {
     // built here and is all a classic page ever compiles.
     this._csLoc = {};   // EE5 / VC4: the cloud shadow map's uniforms, one pair per program that lights by the sun (the water pair joins below)
     this._lane = null;       // the installed lane, or null for classic
+    // EARLY-Z: the installed set's mesh program is the lane's no-kill twin (set.meshPlain) while the draws of this frame
+    // can take it, and the lit program otherwise (_meshPlainOn is what _installWorldSet reads). _meshPlainOk is this
+    // frame's answer to "may they at all"; the frame's own projection, view and light are kept for a mid-frame swap's
+    // second upload of the mesh block (_meshFrame), 35 floats a frame.
+    this._meshPlainOn = false;
+    this._meshPlainOk = false;
+    this._meshHold = 0;   // ...and a translucent draw holds the program it sent its share to (_drawTranslucent)
+    this._frameP = new Float32Array(16); this._frameV = new Float32Array(16); this._frameL = new Float32Array(3);
     this._laneSet = null;    // the lane's compiled set, kept across a swap back and forth
     this._exposure = 1;      // the lane's exposure (EL1); inert on the classic set
     this._shadows = null;    // EL2: the ShadowPass while a lane that asks for shadows is installed
@@ -2257,6 +2265,11 @@ export class Renderer {
     return {
       key: src.key,
       mesh: this._buildProgram(VS, src.meshFs),
+      // EARLY-Z: the lane's no-kill twin (enhancedLighting.js EL_MESH_FS_PLAIN), compiled the first time a draw can take
+      // it (_ensureMeshPlain) - a page whose every frame asks for a kill arm never compiles it, the terrain's clip
+      // variant's kind. meshFs is the text it is built from, kept with the set.
+      meshPlain: null,
+      meshFs: src.meshFsPlain ?? null,
       char: this._charSkinProgram(src.charFs),   // MWNPC1: the skin in the world's character program
       bb: this._buildProgram(bbVertexShader(src.bbVs), src.bbFs),   // LA-COST3: a lane may add to the billboard VS (its flat's sun, once a quad)
       terrain: this._buildProgram(TERRAIN_VS, src.terrainFs),
@@ -2352,7 +2365,10 @@ export class Renderer {
   _installWorldSet(set) {
     const gl = this._locations(set);   // LA-COST7: every lookup below, memoized on the set
     this._worldSet = set;
-    this.program = set.mesh;
+    // EARLY-Z: the set's mesh program is the no-kill twin while this frame's draws can take it (_meshPlainOn), the lit
+    // program otherwise. Every table below is read off whichever is installed, so one install serves both, and a swap
+    // mid-frame is just another install (_meshVariant).
+    this.program = this._meshPlainOn && set.meshPlain ? set.meshPlain : set.mesh;
     this.uProj = gl.getUniformLocation(this.program, 'uProj');
     this.uView = gl.getUniformLocation(this.program, 'uView');
     this.uModel = gl.getUniformLocation(this.program, 'uModel');
@@ -2511,7 +2527,7 @@ export class Renderer {
       a.contact = { prevDepth: gl.getUniformLocation(p, 'uPrevDepth'), prevVP: gl.getUniformLocation(p, 'uPrevVP'), prevProjInfo: gl.getUniformLocation(p, 'uPrevProjInfo'), prevRect: gl.getUniformLocation(p, 'uPrevRect'), contactParams: gl.getUniformLocation(p, 'uContactParams') };   // EL8
       return a;
     };
-    this._el = { mesh: elLocs(set.mesh), char: elLocs(set.char), bb: elLocs(set.bb), terrain: elLocs(this.terrainProgram), decal: elLocs(set.decal) };   // MAC-BUG W6: the decal's lane uniforms ride the same table; FAR-CLIP1: the terrain's are the installed variant's
+    this._el = { mesh: elLocs(this.program), char: elLocs(set.char), bb: elLocs(set.bb), terrain: elLocs(this.terrainProgram), decal: elLocs(set.decal) };   // MAC-BUG W6: the decal's lane uniforms ride the same table; FAR-CLIP1: the terrain's are the installed variant's; EARLY-Z: the mesh's are the installed program's (the twin declares the same lane uniforms)
     this._elLocsOf = elLocs;   // SNOWFALL1: the snow program's lane table is looked up the same way, with its program (_ensureTerrainSnow)
     this._tFrameStamp = -1;
     this._bbFrameStamp = -1; this._dFrameStamp = -1; this._cFrameStamp = -1;   // LA-COST1: the other three blocks were the old set's programs'
@@ -2585,6 +2601,10 @@ export class Renderer {
   get lightingLane() { return this._lane?.classicLook ? null : this._lane; }
   /** IIL2: the installed lane's key, whatever its look ('enhanced-lighting', 'classic-shadows'), or null. */
   get installedLaneKey() { return this._lane?.key ?? null; }
+  /** EARLY-Z: is the installed set's mesh program the lane's no-kill twin right now? Nothing renders differently either
+   *  way - this is here so a probe, a page or a test can say whether the frame's draws got the early depth test back,
+   *  which is otherwise invisible from outside the programs. */
+  get earlyZActive() { return !!this._meshPlainOn; }
   /** EL1: the lane's exposure, for a foreign pass that lights on the lane (the far ring). */
   get exposure() { return this._exposure; }
 
@@ -5578,6 +5598,92 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     this.gl.clearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
   }
 
+  /** EARLY-Z: the installed set's no-kill mesh program, compiled the first time
+   *  a draw can take it (the terrain clip variant's kind: a page whose every
+   *  frame asks for a kill arm never compiles it). Null on a lane that brings
+   *  no twin - the classic set's mesh shader keeps its cutout, so it has none. */
+  _ensureMeshPlain(set = this._worldSet) {
+    if (!set?.meshFs) return null;
+    return (set.meshPlain ??= this._buildProgram(VS, set.meshFs));
+  }
+
+  /** EARLY-Z: SWAP THE MESH PROGRAM MID-FRAME - the no-kill twin for a bundle
+   *  that needs no kill arm, the lit program for one that does. A program's
+   *  uniforms are its own, so the set is installed again (its tables through
+   *  the one home, the memo asking GL nothing) and the mesh block sent to the
+   *  program that is bound now; the draw-state shadows that install drops are
+   *  put up again by the next sub-mesh, exactly as after any install. Nothing
+   *  else in the frame moves: the projection, the view and the light are the
+   *  frame's, kept in _frameP/_frameV/_frameL for this second call. */
+  _meshVariant(plain) {
+    const want = !!plain && !!this._meshPlainOk && !this._meshHold && !!this._ensureMeshPlain();
+    if (!!this._meshPlainOn === want) return;
+    this._meshPlainOn = want;
+    this._installWorldSet(this._worldSet);
+    this._meshFrame(this._frameP, this._frameV, this._frameL);
+  }
+
+  /** EARLY-Z: CAN THIS BUNDLE DRAW ON THE NO-KILL TWIN? Only when every one of
+   *  its sub-meshes has resolved its picture (a miss is still streaming, and
+   *  the lit program is the safe answer to a question that cannot be answered
+   *  yet) and none of them is a real window or a cutout picture - the two
+   *  things the twin has no instruction for. */
+  _plainFor(mesh) {
+    const subs = mesh.subMeshes;
+    for (let i = 0; i < subs.length; i++) {
+      const sm = subs[i];
+      if (sm._evGen !== this._texGen) return false;
+      if (sm._evWin || sm._evCut) return false;
+    }
+    return true;
+  }
+
+  /** EARLY-Z: THE MESH PROGRAM'S FRAME-CONSTANT BLOCK, one home for both of a
+   *  set's mesh programs. It was the first twenty lines of beginFrame and is a
+   *  method only because a mid-frame swap (_meshVariant) has to send it a
+   *  second time, to the program bound then. The frame's three own numbers are
+   *  kept as it goes (thirty-five floats, once a frame) for that call. */
+  _meshFrame(proj, view, lightDir) {
+    const gl = this.gl;
+    this._use(this.program);
+    gl.uniformMatrix4fv(this.uProj, false, proj);
+    gl.uniformMatrix4fv(this.uView, false, view);
+    gl.uniform3fv(this.uLightDir, lightDir);
+    this._frameP.set(proj); this._frameV.set(view);
+    this._frameL[0] = lightDir[0]; this._frameL[1] = lightDir[1]; this._frameL[2] = lightDir[2];
+    gl.uniform3fv(this.uAmbient, this._c3(this._ambient));   // EL1: every colour goes up as the installed set wants it (_c3)
+    this._uploadTrilight();
+    gl.uniform1f(this.uSunScale, this._sunScale);
+    gl.uniform3fv(this.uSunColor, this._c3(this._sunColor));
+    gl.uniform3fv(this.uMoonDir, this._moonDir);
+    gl.uniform1f(this.uMoonScale, this._moonScale);
+    gl.uniform3fv(this.uMoonColor, this._c3(this._moonColor));
+    gl.uniform3fv(this.uLight3Dir, this._light3Dir);
+    gl.uniform1f(this.uLight3Scale, this._light3Scale);
+    gl.uniform3fv(this.uLight3Color, this._c3(this._light3Color));
+    gl.uniform1i(this.uTex, 0);
+    gl.uniform1i(this.uEmissionTex, 1);
+    gl.uniform3fv(this.uEmissionColor, this._c3(this._windowEmission));
+    this._emissionColorUp = this._windowEmission;   // F49: the per-sub-mesh shadow starts the frame true
+    this._forgetTextureShadows();   // PERF-TEX: a frame's; the post passes (air, clouds) own the units between frames
+    const count = this._pointLights.length / 4;
+    gl.uniform1i(this.uPointCount, count);
+    if (count > 0) gl.uniform4fv(this.uPointLights, this._pointLights);
+    if (count > 0) gl.uniform3fv(this.uPointColors, this._pointColorData(count));
+    gl.uniform4fv(this.uIndirect, this._indirect);
+    gl.uniform3fv(this.uIndirectColor, this._c3(this._indirectColor));
+    this._uploadEl('mesh');   // EL1
+    // Camera position from the view matrix (view = R^T * T(-eye)).
+    const v = view;
+    this._camPos[0] = -(v[0] * v[12] + v[1] * v[13] + v[2] * v[14]);
+    this._camPos[1] = -(v[4] * v[12] + v[5] * v[13] + v[6] * v[14]);
+    this._camPos[2] = -(v[8] * v[12] + v[9] * v[13] + v[10] * v[14]);
+    this._uploadFog(this._solidFog);
+    this._activeTexture(gl.TEXTURE0);
+    this._proj = proj;
+    this._view = view;
+  }
+
   beginFrame(proj, view, lightDir, opts = null) {
     this._close2D();   // PERF-2D: the baseline back, before anything that needs it
     const s = this.stats;
@@ -5637,45 +5743,23 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     s.viewDraws = this._rwOutside ? 0 : this._rwViewDraws;
     this._rwViewDraws = 0;   // PASS-COUNT: the view out's draws, taken by the room's frame (the stats' note) - the view out's own begin zeroes it too, and its close counts afresh
-    this._use(this.program);
-    gl.uniformMatrix4fv(this.uProj, false, proj);
-    gl.uniformMatrix4fv(this.uView, false, view);
-    gl.uniform3fv(this.uLightDir, lightDir);
+    // EARLY-Z: THE FRAME'S CHOICE. A `discard` anywhere in a fragment shader costs it the early depth test, so on this
+    // backend every fragment a room's own walls hide is shaded in full and thrown away afterwards - 96.64 ms of world
+    // pass over 9,079 triangles and 220 draws, about 105 ns a screen pixel, is that price paid layer after layer. The
+    // lane's no-kill twin (enhancedLighting.js EL_MESH_FS_PLAIN) takes the depth test back, and it is the same picture
+    // exactly where no kill arm can fire: a WORLD frame of the installed lane alone, with no panel or studio bracket
+    // (they draw on the classic set), no sprite pass, no view out (a pane), no automap slice or presentation, and no
+    // dissolve. Per bundle, _plainFor also refuses a window or cutout sub-mesh. A frame that asks for any of these keeps
+    // the lit program, as before.
+    this._meshPlainOk = !!this._worldSet?.meshFs && opts?.world === true && !this._panelSaved && this._spriteDepth === 0
+      && this._studioDepth === 0 && !this._rwOutside && this._clipY === 1e9 && this._automapMode === 0 && (this._dissolve ?? 1) === 1;
+    this._meshPlainOn = this._meshPlainOk && !!this._ensureMeshPlain();
+    if (this._worldSet && this.program !== (this._meshPlainOn ? this._worldSet.meshPlain : this._worldSet.mesh)) this._installWorldSet(this._worldSet);
     this._lightDir = lightDir;
     this._frameStamp++;   // PERF3
     this._ripples = null;   // AUDIT WATER-NEXT G12: no ripple field but the one a host hands over this frame
     this._snowRise = 0;   // SNOW-TELL: and the snow's height over the ground - drawSnow's, on a frame that draws it
-    gl.uniform3fv(this.uAmbient, this._c3(this._ambient));   // EL1: every colour goes up as the installed set wants it (_c3)
-    this._uploadTrilight();
-    gl.uniform1f(this.uSunScale, this._sunScale);
-    gl.uniform3fv(this.uSunColor, this._c3(this._sunColor));
-    gl.uniform3fv(this.uMoonDir, this._moonDir);
-    gl.uniform1f(this.uMoonScale, this._moonScale);
-    gl.uniform3fv(this.uMoonColor, this._c3(this._moonColor));
-    gl.uniform3fv(this.uLight3Dir, this._light3Dir);
-    gl.uniform1f(this.uLight3Scale, this._light3Scale);
-    gl.uniform3fv(this.uLight3Color, this._c3(this._light3Color));
-    gl.uniform1i(this.uTex, 0);
-    gl.uniform1i(this.uEmissionTex, 1);
-    gl.uniform3fv(this.uEmissionColor, this._c3(this._windowEmission));
-    this._emissionColorUp = this._windowEmission;   // F49: the per-sub-mesh shadow starts the frame true
-    this._forgetTextureShadows();   // PERF-TEX: a frame's; the post passes (air, clouds) own the units between frames
-    const count = this._pointLights.length / 4;
-    gl.uniform1i(this.uPointCount, count);
-    if (count > 0) gl.uniform4fv(this.uPointLights, this._pointLights);
-    if (count > 0) gl.uniform3fv(this.uPointColors, this._pointColorData(count));
-    gl.uniform4fv(this.uIndirect, this._indirect);
-    gl.uniform3fv(this.uIndirectColor, this._c3(this._indirectColor));
-    this._uploadEl('mesh');   // EL1
-    // Camera position from the view matrix (view = R^T * T(-eye)).
-    const v = view;
-    this._camPos[0] = -(v[0] * v[12] + v[1] * v[13] + v[2] * v[14]);
-    this._camPos[1] = -(v[4] * v[12] + v[5] * v[13] + v[6] * v[14]);
-    this._camPos[2] = -(v[8] * v[12] + v[9] * v[13] + v[10] * v[14]);
-    this._uploadFog(this._solidFog);
-    this._activeTexture(gl.TEXTURE0);
-    this._proj = proj;
-    this._view = view;
+    this._meshFrame(proj, view, lightDir);
     // FIELD BUGS 2026-10-12g BATCH-SHUT: a body batch no pass flushed is let go as the frame begins - its pictures are one
     // frame's loss. Left open, every later pass's begin joined it and its flush only stepped the depth down: no
     // Morrowind body drew again until a reload
@@ -6480,6 +6564,9 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
    *  the binding here is safe. */
   setClipY(y) {
     this._clipY = y ?? 1e9;
+    // EARLY-Z: a slice is a kill arm the no-kill twin has no instruction for - the automap lifts it MID-pass, so the lit
+    // program comes back first (and the table below is then that program's)
+    if (this._clipY !== 1e9 && this._meshPlainOn) this._meshVariant(false);
     if (this._solidFog?.clipY) {
       const gl = this.gl;
       this._use(this.program);
@@ -6493,6 +6580,8 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     const k = Math.max(0, Math.min(1, Number.isFinite(v) ? v : 1));
     if (k === (this._dissolve ?? 1)) return;
     this._dissolve = k;
+    // EARLY-Z: a faded fragment is a kill arm - the boats put the lit program back for the draws that carry it
+    if (k !== 1 && this._meshPlainOn) this._meshVariant(false);
     if (this.uDissolveCut) {
       this._use(this.program);
       this.gl.uniform1f(this.uDissolveCut, 1 - k);   // the share CUT: nought, a uniform's own start, is whole
@@ -8507,6 +8596,8 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
    *  so no draw after it inherits any of it. */
   _drawTranslucent(mesh, modelMatrix, texRemap, alpha) {
     const gl = this.gl;
+    this._meshHold++;   // EARLY-Z: a translucent draw sends uMeshAlpha once and puts it back on the SAME program - a swap under it would leave the other program holding the share
+    this._meshVariant(false);
     this._use(this.program);
     gl.enable(gl.BLEND);
     gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
@@ -8519,6 +8610,7 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       gl.uniform1f(this.uMeshAlpha, 0);
       gl.depthMask(true);
       gl.disable(gl.BLEND);
+      this._meshHold--;
     }
   }
 
@@ -8556,6 +8648,10 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     // EV6: ownership now flows through the _use shadow - the bind is
     // still this call's to account for, it just costs nothing when the
     // program is already bound.
+    // EARLY-Z: this bundle on the lane's no-kill twin when it can take it - a window or a cutout picture cannot, and a
+    // translucent draw holds the program it set its share on (_meshHold). The answer costs a walk of flags the loop
+    // below resolves anyway (a memo hit each, once a texture generation).
+    if (this._meshPlainOk && !this._meshHold) this._meshVariant(this._plainFor(mesh));
     this._use(this.program);
     this._uploadCloudShadow('mesh');   // VC4
     gl.uniformMatrix4fv(this.uModel, false, modelMatrix);

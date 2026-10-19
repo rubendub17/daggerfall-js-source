@@ -355,12 +355,14 @@ vec3 rwRoomOver(vec3 base, float glass, vec3 dp1, vec3 dp2, vec2 duv1, vec2 duv2
  *  derivatives in uniform control flow, before any discard); CUTOUT after the picture's texel; GLASS between the
  *  emission and the albedo it is subtracted from (an interior's glass wears no window style); ROOM once the lighting
  *  is summed and before the fog - `lit` carries the room, so the shader's own output line stands as it was. */
-export const RW_MAIN_DERIVS = '  vec3 rwDp1 = dFdx(vWorldPos), rwDp2 = dFdy(vWorldPos); vec2 rwDuv1 = dFdx(vUV), rwDuv2 = dFdy(vUV);   // RW1: the room\'s frame, in uniform control flow\n'
-  + '  if (uPaneOn > 0.5 && gl_FragCoord.z <= texelFetch(uPaneDepth, ivec2(gl_FragCoord.xy), 0).r) discard;   // PANE-CLIP: the view out draws only what stands past the glass';
+export const RW_DERIVS = '  vec3 rwDp1 = dFdx(vWorldPos), rwDp2 = dFdy(vWorldPos); vec2 rwDuv1 = dFdx(vUV), rwDuv2 = dFdy(vUV);   // RW1: the room\'s frame, in uniform control flow';
+export const RW_PANE_CLIP = '  if (uPaneOn > 0.5 && gl_FragCoord.z <= texelFetch(uPaneDepth, ivec2(gl_FragCoord.xy), 0).r) discard;   // PANE-CLIP: the view out draws only what stands past the glass';
+export const RW_MAIN_DERIVS = RW_DERIVS + '\n' + RW_PANE_CLIP;
 export const RW_MAIN_CUTOUT = '  if (uCutout > 0.5 && tex.a < 0.5) discard;   // RW1: a cutout picture\'s hole (every other picture keeps INCIDENT 2026-09-04\'s no-clip law)';
-export const RW_MAIN_GLASS = '  float rwGlass = texture(uEmissionTex, vUV).r;   // RW1: the glass mask\n'
-  + '  if (uWinMode > 2.5 && rwGlass > 0.5 && rwInRect(gl_FragCoord.xy)) discard;   // RW1: an interior\'s glass, cut to the view out\n'
-  + '  emission *= step(uWinMode, 1.5);   // RW1: an interior\'s glass wears no window style';
+export const RW_GLASS_MASK = '  float rwGlass = texture(uEmissionTex, vUV).r;   // RW1: the glass mask';
+export const RW_GLASS_CLIP = '  if (uWinMode > 2.5 && rwGlass > 0.5 && rwInRect(gl_FragCoord.xy)) discard;   // RW1: an interior\'s glass, cut to the view out';
+export const RW_GLASS_EMIS = '  emission *= step(uWinMode, 1.5);   // RW1: an interior\'s glass wears no window style';
+export const RW_MAIN_GLASS = RW_GLASS_MASK + '\n' + RW_GLASS_CLIP + '\n' + RW_GLASS_EMIS;
 export const RW_MAIN_ROOM = '  if (uWinMode > 0.5 && uWinMode < 1.5) lit = rwRoomOver(lit + emission, rwGlass, rwDp1, rwDp2, rwDuv1, rwDuv2) - emission;   // RW1: the room behind the glass';
 
 // ---------------------------------------------------------------------------------------------------------------
