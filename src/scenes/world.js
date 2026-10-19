@@ -265,6 +265,7 @@ import { createMotherlodeBook } from '../net/motherlodeBook.js';   // PROF2b: th
 import { createProfHud } from '../ui/professions/profHud.js';   // PROF1: the prompt, the act's meter, the toasts, the day's chip, the rank's banner
 import { createGatherHost } from './gatherHost.js'; // PROF1/PROF2: the gathering professions in the streaming world - the nodes, the target, the act
 import { createWorldBench } from './benchHost.js';   // BENCH1: the benchmark, as a mode of this host - the streets, the crowd and the stream, measured
+import { clearTutorialLine } from '../ui/tutorialPopup.js';   // BENCH1: the right-side help card, cleared for the run   // BENCH1: the benchmark, as a mode of this host - the streets, the crowd and the stream, measured
 import { herbKind } from './herbHost.js';   // PROF1: Herbalism's patches, a kind in it
 import { mineKind } from './mineHost.js'; import { nodeCompassPoints } from '../ui/nodeMarks.js'; import { createNodeGlowPass } from '../render/nodeGlow.js';   // PROF2: Mining's veins and Quarrying's boulders, a kind in it; NODE-MARKS: every profession's nodes on the compass in its colour, and lit where they stand
 import { treeKind, FOREST_STAMP } from './treeHost.js';   // PROF4: Logging's trees - the forest's own - a kind in it; LPT1: the felled trees' count, the near 3D trees' regather
@@ -32516,7 +32517,7 @@ const _pixelOrder = [];   // NEAR-FIRST: the frame's pixel walk, nearest first -
       build: () => BUILD_TAG,
       // BENCH1: no window may hold the motor between legs - the opening boxes, a tutorial
       // page, a level-up. A leg under a modal measures a paused game.
-      quiet: () => { for (let n = 0; townTalk.overlayActive && n < 40; n++) townTalk.closeOverlay?.(); },
+      quiet: () => { for (let n = 0; townTalk.overlayActive && n < 40; n++) townTalk.closeOverlay?.(); try { clearTutorialLine(); } catch { /* no cards */ } },
       // BENCH1: HOW MANY TOWNSFOLK ARE ABOUT, asked of the host's own probe (`__people`, the one
       // the HUD and the screenshots read) before this file's own walk of the built pools. The
       // census is what proves two runs measured the same street, so it must be the game's count.
@@ -32527,7 +32528,12 @@ const _pixelOrder = [];   // NEAR-FIRST: the frame's pixel walk, nearest first -
         return n;
       },
     });
-    console.info(`[bench] ${bench.surface.legs.join(', ')} - offline, on the real game`);
+    // THE RIGHT-SIDE HELP CARD IS RID OF (the owner: "helping messages that appear on the right of
+    // the screen and only disappear when i click some key"). The pref is off for the run in the
+    // host; this clears the line already queued, because a tutorial card is read on DISMISSAL, not
+    // on display - switching the pref alone left one standing over the whole benchmark.
+    try { clearTutorialLine(); } catch { /* a host with no tutorial cards */ }
+    console.info(`[bench] ${bench.surface.legs.join(', ')}`);
   }
 
   function frame(now) {

@@ -75,7 +75,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './lib/isMain.mjs';
-import { BENCH_LEG_IDS, BENCH_LEGS, BENCH_PINS, benchUrl, censusOk, legsOf, parseLegs, scoreOf } from '../src/systems/bench/law.js';
+import { BENCH_LEG_IDS, BENCH_LEGS, BENCH_PINS, BENCH_UNWIRED, benchUrl, censusOk, legsOf, parseLegs, scoreOf } from '../src/systems/bench/law.js';
 import { DASH, legHead, legRow, reportLines } from '../src/ui/benchOverlay.js';
 import { aggregate } from './lib/cpuProfile.mjs';
 import { launchChromium } from './lib/browser.mjs';
@@ -695,16 +695,25 @@ async function run(opts) {
     // `npm run tracks` writes, and a fresh checkout has none - asking for it makes the first run red
     // for a reason one command fixes. It is dropped from the request with a line saying why; an
     // EXPLICIT `--legs street` still fails by name, because that is a promise the run breaks.
-    if (opts.legs.includes('street') && !BENCH_TRACKS?.[BENCH_PINS.loc]) {
-      console.log('bench: the street run is not in this run - no route is authored yet (`npm run tracks --headed` walks the capital and writes one)');
-      opts.legs = opts.legs.filter((id) => id !== 'street');
+    // THE LEGS WHOSE DOOR IS NOT WIRED YET are dropped from the request with the law's own reason
+    // (a route nobody authored, a journey this build cannot open), so a run asks for what it can play
+    // and says what it left out. The law keeps the list and the sentence; the leg still fails by name
+    // if a host is asked for it some other way.
+    for (const [id, why] of Object.entries(BENCH_UNWIRED)) {
+      if (!opts.legs.includes(id)) continue;
+      if (id === 'street' && BENCH_TRACKS?.[BENCH_PINS.loc]) continue;   // its route IS authored: the leg is real
+      console.log(`bench: the ${id} leg is not in this run - ${why}`);
+      opts.legs = opts.legs.filter((x) => x !== id);
       for (const page of plan) {
-        if (page.scene !== 'world') continue;
-        page.want = page.want.filter((id) => id !== 'street');
-        page.url = benchUrl({ base, legs: page.want, asIs: opts.asIs, scene: 'world' });
+        if (!page.want.includes(id)) continue;
+        page.want = page.want.filter((x) => x !== id);
+        page.url = benchUrl({ base, legs: page.want, asIs: opts.asIs, scene: page.scene });
       }
     }
+    // a page with nothing left to play is not opened at all: its legs were named and dropped above
+    for (let i = plan.length - 1; i >= 0; i--) if (!plan[i].want.length) plan.splice(i, 1);
     for (const page of plan) console.log(`bench: the ${page.scene} page - ${page.url}`);
+    if (!plan.length) throw new Error('benchmark: no leg of this run can be played on this build yet - see the lines above for what each one is waiting on (`docs/Benchmark-Tool-Plan.md` has the order they are wired in)');
     browser = await launchBrowser(chromium, opts.headed
       ? { headless: false, args: NO_THROTTLE }
       : { headless: true, args: [...NO_THROTTLE, ...SOFTWARE_GL] });

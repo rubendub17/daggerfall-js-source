@@ -188,6 +188,10 @@ export function createDungeonBench(host) {
 /** How long a leg may wait for the stream to settle before it starts anyway, milliseconds. A
  *  benchmark that measured a loading screen would report the loader's frame rate as the town's. */
 export const SETTLE_CEILING_MS = 180000;
+/** The shortest a stream leg may be, milliseconds. Measured to the settle, yes - but the settle of a
+ *  journey that never left is immediately true, and the first real run's stream leg lasted three
+ *  frames: a second and a half nobody could see, reported as a 7 fps leg. */
+export const STREAM_MIN_MS = 8000;
 
 /** Seconds to milliseconds, the law's own unit into the frame's. */
 const toMs = (s) => Math.max(0, Number(s) || 0) * 1000;
@@ -240,6 +244,7 @@ export function createBenchHost(deps) {
   let stamps = [];
   let cursor = 0;               // the walk's waypoint cursor
   let swingAt = 0;              // when the next swing begins
+  let sawBusy = false;         // the stream leg's witness: the journey actually started
   let report = null;
   let bot = null;
   let inputLock = null;         // the release of the player's hands, held for the life of the run
@@ -303,6 +308,18 @@ export function createBenchHost(deps) {
     tutorialWas = tutorialPopupsOn();
     setTutorialPopups(false);
     if (presetForced) deps.applyPreset(BENCH_PRESET);
+    // A CHARACTER-CREATION SCREEN IS NOT A SCENE. The standalone dungeon host does not mint its
+    // character from ?class= on this build (reproduced with no benchmark on the page at all), so
+    // the fights would have been measured over a wizard - the one thing a benchmark must never do
+    // is film a login screen and call it a frame. It fails by name instead.
+    // chargenDone is TRUE on a minted character and null or false while the wizard stands, so the
+    // test is the positive one - the first cut asked !== false, and a wizard whose flag is null
+    // walked straight past it (the dungeon page measured 220 draws of its own panel).
+    const bodyUp = (() => { try { const b = deps.entity?.(); return !b || b.chargenDone === true; } catch { return true; } })();
+    if (!bodyUp) {
+      failures.push('this page has no character - the character-creation screen is up (?class= does not mint one on the dungeon door in this build), so there is nothing to measure');
+      return finish();
+    }
     if (!armTheBody()) failures.push('the body could not be given its health pool - a fight leg may end the run with a corpse');
     if (!legs.length) {
       failures.push(`no leg of this page was asked for - bench=${deps.params?.get('bench') ?? '(none)'} plays nothing here`);
@@ -482,12 +499,26 @@ export function createBenchHost(deps) {
       const trouble = playLeg(leg, Math.max(0, Number(dt) || 0), feet, heading);
       if (trouble) { failures.push(`${leg.title}: ${trouble}`); return finish(); }
       if (leg.kind === 'stream') {
-        // measured to the settle: the journey is asked for once, then the leg ends when the
-        // stream says it is idle - or fails by its own name when the ceiling passes
-        if (stamps.length === 1 && typeof deps.travel === 'function') deps.travel();
-        if (deps.settle?.() && stamps.length > 2) return endLeg();
-        if (at - phaseAt >= toMs(leg.seconds)) {
-          failures.push(`${leg.title}: the stream never settled in ${leg.seconds} s`);
+        // MEASURED TO THE SETTLE - once the journey has actually STARTED. `settle()` is true of a
+        // stream that never left, so the leg must witness the stream BUSY before an idle stream may
+        // end it, and it holds a window long enough to be seen (STREAM_MIN_MS): the first real run
+        // ended this leg in three frames over a journey that never opened, and reported 7 fps over
+        // a second and a half nobody could watch.
+        if (stamps.length === 1 && typeof deps.travel === 'function') {
+          let moved = false;
+          try { moved = deps.travel() !== false; } catch { moved = false; }
+          if (!moved) {
+            failures.push(`${leg.title}: the map could not open a journey (nowhere discovered to travel to, or the map refused)`);
+            return finish();
+          }
+        }
+        if (!deps.settle?.()) sawBusy = true;
+        const held = at - phaseAt;
+        if (sawBusy && deps.settle?.() && held >= STREAM_MIN_MS) return endLeg();
+        if (held >= toMs(leg.seconds)) {
+          failures.push(sawBusy
+            ? `${leg.title}: the stream never settled in ${leg.seconds} s`
+            : `${leg.title}: the stream never started - the journey opened no queue to wait on`);
           return finish();
         }
         return;

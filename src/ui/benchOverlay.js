@@ -126,7 +126,7 @@ export function createBenchOverlay({ onExport = null, onClose = null } = {}) {
 
   const sub = document.createElement('div');
   sub.style.cssText = 'opacity:.72;margin:0 0 12px;font-size:12px';
-  sub.textContent = 'the real game, offline';
+  sub.textContent = 'the game plays itself';   // NOT "the real game": that sentence told a reader nothing the card's own numbers do not
   card.appendChild(sub);
 
   const body = document.createElement('pre');

@@ -40,7 +40,7 @@ function fakeWorld(over = {}) {
     now: () => clock,
     ...over,
   };
-  const body = { health: 50, maxHealth: 100 };
+  const body = { health: 50, maxHealth: 100, chargenDone: true };   // a minted character: the run refuses to measure over a wizard
   let clock = 1000;
   const host = createBenchHost(deps);
   /** Step the frame loop for `seconds`, giving the host the stamps a rAF would. */
@@ -127,17 +127,49 @@ test('BENCH1 host: a street leg with no authored track fails by name - the bench
   assert.match(s.report.failures[0], /tools\/benchTracks\.mjs/, 'the failure names the tool that writes one');
 });
 
-test('BENCH1 host: the stream leg ends on the settle, and a stream that never settles fails by its ceiling', () => {
-  const settled = fakeWorld({ params: new URLSearchParams('bench=stream'), settle: () => true });
-  settled.play(2);
+test('BENCH1 host: the stream leg waits for the journey to START, holds a window you can watch, then ends on the settle', () => {
+  // THE FIRST REAL RUN'S DEFECT. `settle()` is true of a stream that never left, so the leg ended in
+  // three frames over a journey that never opened - 7 fps over a second and a half nobody could see.
+  // The leg now witnesses the stream BUSY first, and holds STREAM_MIN_MS whatever else happens.
+  let t = 0;
+  const settled = fakeWorld({
+    params: new URLSearchParams('bench=stream'),
+    settle: () => { t += 1; return t > 120; },   // busy for two seconds of frames, then idle
+  });
+  settled.play(11);
   assert.equal(settled.host.surface.state, 'done', JSON.stringify(settled.host.surface.failures));
   assert.equal(settled.asked.travel, 1, 'the journey is asked for ONCE, not once a frame');
-  assert.ok(settled.host.surface.report.legs[0].frames > 0, 'a stream leg still counts its frames');
+  const leg = settled.host.surface.report.legs[0];
+  assert.ok(leg.frames >= 450, `a window you can watch, not three frames: ${leg.frames}`);
+  assert.ok(leg.seconds >= 8, `the leg holds its minimum (STREAM_MIN_MS): ${leg.seconds} s`);
 
   const stuck = fakeWorld({ params: new URLSearchParams('bench=stream'), settle: () => false });
   stuck.play(61);
   assert.equal(stuck.host.surface.state, 'failed');
   assert.match(stuck.host.surface.report.failures[0], /never settled in 60 s/);
+
+  // ...and a journey that opened no queue at all is its OWN failure, not a 1-second "stream"
+  const empty = fakeWorld({ params: new URLSearchParams('bench=stream'), settle: () => true });
+  empty.play(61);
+  assert.equal(empty.host.surface.state, 'failed');
+  assert.match(empty.host.surface.report.failures[0], /never started - the journey opened no queue/);
+
+  // ...and a map that refuses to open one says so at once
+  const refused = fakeWorld({ params: new URLSearchParams('bench=stream'), settle: () => true, travel: () => false });
+  refused.play(2);
+  assert.equal(refused.host.surface.state, 'failed');
+  assert.match(refused.host.surface.report.failures[0], /the map could not open a journey/);
+});
+
+test('BENCH1 host: a character-creation screen is not a scene - the run refuses rather than filming a wizard', () => {
+  const w = fakeWorld({ params: new URLSearchParams('bench=crowd') });
+  const body = w.body;
+  body.chargenDone = false;   // the standalone dungeon door leaves the wizard standing
+  w.play(1);
+  const s = w.host.surface;
+  assert.equal(s.state, 'failed');
+  assert.match(s.report.failures[0], /no character - the character-creation screen is up/);
+  assert.equal(s.report.legs.length, 0, 'no leg was measured over it');
 });
 
 test('BENCH1 host: no bindings, no hands - the leg fails rather than pressing a key of the bench\'s own', () => {

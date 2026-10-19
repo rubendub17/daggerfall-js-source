@@ -72,6 +72,29 @@ export const BENCH_LEGS = Object.freeze([
  */
 export const BENCH_VITAL = Object.freeze({ maxHealth: 1000000, health: 1000000 });
 
+/**
+ * THE LEGS WHOSE SCENE DOOR IS NOT WIRED YET, each with the reason in a sentence - so a run asks for
+ * what it can actually play and SAYS what it left out, instead of coming back red over a door nobody
+ * has built. Two are here today:
+ *
+ *   street - it replays a route, and a route is authored by `npm run tracks` on a machine with the
+ *     data (src/systems/bench/tracks.js ships empty on purpose).
+ *   stream - measured to the settle, so it needs a JOURNEY to open that queue; the door this build
+ *     offers opens the map, not a trip, and the first real run proved it: the leg ended in three
+ *     frames and would have reported 7 fps over a second and a half nobody could see. The leg now
+ *     fails by name when it is asked for, which is how that was found.
+ *
+ * An entry comes OUT of this list in the change that wires its door, never by deleting the leg.
+ */
+export const BENCH_UNWIRED = Object.freeze({
+  street: 'its route is authored on a machine with the data - `npm run tracks --headed` writes one',
+  stream: 'the map journey it measures needs a destination pick, and this build\'s door opens the map, not a trip',
+  blade: 'the dungeon door never mints its character in this build (?class= is not applied on it - reproduced with no benchmark on the page), so the page stands on the character-creation screen',
+  bow: 'the dungeon door never mints its character in this build (see the blade leg)',
+  spell: 'the dungeon door never mints its character in this build (see the blade leg)',
+  dungeon: 'the dungeon door never mints its character in this build (see the blade leg)',
+});
+
 /** The legs a page plays. `scene` is 'world' or 'dungeon'; anything else answers none. */
 export function legsOf(scene) {
   return BENCH_LEGS.filter((leg) => leg.scene === scene);

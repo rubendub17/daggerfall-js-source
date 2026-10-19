@@ -344,4 +344,33 @@ What the run cost, and what it found:
   and the card's `gpu` column (the perf meter exposes no last-GPU read to a module yet - the
   number is in `--profile`).
 
+## The first WATCH, and what it exposed (the owner, same evening)
+
+Four things a person sees that a test does not:
+
+- **"The stream ends too fast - I couldn't even see it."** It did: the leg measured `settle()`, and
+  the settle of a journey that never left is immediately true, so it ended in three frames and
+  reported 7 fps over a second and a half nobody could watch. The leg now witnesses the stream
+  **busy** before an idle stream may end it, holds `STREAM_MIN_MS` (8 s) whatever else happens, and
+  says which of three things went wrong: the map refused to open a journey, the journey opened no
+  queue, or the queue never settled. **A journey needs a destination pick, and this build's door
+  opens the map only** - so `stream` is on `BENCH_UNWIRED` until that door exists.
+- **"When it goes to the fighting part it's the new character login screen."** It was: the
+  standalone dungeon host never mints its character from `?class=`, reproduced **without the
+  benchmark on the page**. So the run refuses to film it (a `chargenDone === true` test, because a
+  wizard's flag is `null` and the first cut asked `!== false` and walked past it), and the four
+  dungeon legs are on `BENCH_UNWIRED` with that reason. **Wiring the dungeon's character door is the
+  next slice, and the fights are all that stand behind it.**
+- **"Remove 'the real game' from the benchmark UI."** Done - the card's subtitle is "the game plays
+  itself" and the console line is just the legs.
+- **"Deactivate those helping messages on the right that only disappear when I click a key."** That
+  is the tutorial card (`ui/tutorialPopup.js`), and switching its pref off was not enough: a card is
+  read on **dismissal**, not on display, so a queued one stayed up over the whole run.
+  `clearTutorialLine()` now runs at the run's start and at every leg.
+
+`BENCH_UNWIRED` (in `law.js`) is the list of legs whose scene door is not built yet, each with a
+sentence. The CLI drops them from the request, prints the sentence, and opens only the pages that
+still have something to play - a run asks for what it can play and says what it left out. A leg on
+that list still fails **by name** if a host is asked for it some other way.
+
 
