@@ -85,6 +85,7 @@ uniform vec3 uLight3Dir;
 uniform float uLight3Scale;
 uniform vec3 uLight3Color;
 uniform vec3 uEmissionColor;
+uniform float uEmisOn;   // EMISSION-GATE: 0 when this sub-mesh's emission map is the black tex - the fetch and its decode are then zero work
 uniform int uPointCount;
 uniform vec4 uPointLights[16]; // xyz scene-space, w range
 uniform vec3 uPointColors[16]; // LT1: per-light colour x intensity (AddLight's second switch)
@@ -146,7 +147,7 @@ ${RW_MAIN_CUTOUT}
   // full lighting put a lantern at ~2.3x albedo outdoors. The clamp is
   // ours: a window mask can be brighter than the glass texel under it,
   // and a negative albedo has no honest meaning here.
-  vec3 emission = texture(uEmissionTex, vUV).rgb * uEmissionColor;
+  vec3 emission = uEmisOn > 0.5 ? texture(uEmissionTex, vUV).rgb * uEmissionColor : vec3(0.0);   // EMISSION-GATE
 ${RW_MAIN_GLASS}
   vec3 albedo = max(tex.rgb - emission, vec3(0.0));
   vec3 ambient = uTrilight > 0.5 ? (n.y >= 0.0 ? mix(uAmbient, uAmbientSky, n.y) : mix(uAmbient, uAmbientGround, -n.y)) : uAmbient;   // BA1: Trilight
@@ -2371,6 +2372,7 @@ export class Renderer {
     this.uTex = gl.getUniformLocation(this.program, 'uTex');
     this.uEmissionTex = gl.getUniformLocation(this.program, 'uEmissionTex');
     this.uEmissionColor = gl.getUniformLocation(this.program, 'uEmissionColor');
+    this.uEmisOn = gl.getUniformLocation(this.program, 'uEmisOn');   // EMISSION-GATE
     this.uPointCount = gl.getUniformLocation(this.program, 'uPointCount');
     this.uPointLights = gl.getUniformLocation(this.program, 'uPointLights');
     this.uPointColors = gl.getUniformLocation(this.program, 'uPointColors');
@@ -2515,6 +2517,7 @@ export class Renderer {
     this._bbFrameStamp = -1; this._dFrameStamp = -1; this._cFrameStamp = -1;   // LA-COST1: the other three blocks were the old set's programs'
     this._csUploaded = {};
     this._emissionColorUp = null;
+    this._emisOnUp = null;   // EMISSION-GATE: a new set's program holds no uEmisOn
     this._forgetTextureShadows();   // the set is rebuilt, so every unit it bound is the new set's to claim
     this._lastProgram = null;
   }
@@ -8604,6 +8607,13 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       if (this._emissionColorUp !== emisColor) {
         gl.uniform3fv(this.uEmissionColor, this._c3(emisColor));   // EL1
         this._emissionColorUp = emisColor;
+      }
+      // EMISSION-GATE: a sub-mesh whose emission map is the black texture decodes to zero whatever its colour, so the
+      // shader is told not to fetch it at all. Shadowed like the colour beside it: one uniform a sub-mesh at most.
+      const emisOn = sm._evEmis === this._blackTex ? 0 : 1;
+      if (this._emisOnUp !== emisOn) {
+        if (this.uEmisOn) gl.uniform1f(this.uEmisOn, emisOn);
+        this._emisOnUp = emisOn;
       }
       if (sm._evWin || sm._evCut || this._rwModeUp !== 0 || this._rwCutUp !== 0) this._rwSubMesh(sm, modelMatrix, wire ? null : mesh);   // RW1: the window mode and the cutout, sent when they change
       this._bindEmission(sm._evEmis);   // PERF-TEX: skipped when it is already the one on the unit, which it usually is

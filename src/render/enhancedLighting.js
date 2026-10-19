@@ -556,6 +556,7 @@ uniform vec3 uLight3Dir;
 uniform float uLight3Scale;
 uniform vec3 uLight3Color;
 uniform vec3 uEmissionColor;
+uniform float uEmisOn;   // EMISSION-GATE: 0 when this sub-mesh's emission map is the black tex
 uniform int uPointCount;
 uniform vec4 uPointLights[${EL_MAX_LIGHTS}];
 uniform vec3 uPointColors[${EL_MAX_LIGHTS}];
@@ -606,7 +607,7 @@ ${RW_MAIN_CUTOUT}
   float mdiff = max(dot(n, uMoonDir), 0.0);
   float l3diff = max(dot(n, uLight3Dir), 0.0);
   // emission cancels other light (DaggerfallDefault.shader:83-85), in linear
-  vec3 emission = elDecode(texture(uEmissionTex, vUV).rgb) * uEmissionColor;
+  vec3 emission = uEmisOn > 0.5 ? elDecode(texture(uEmissionTex, vUV).rgb) * uEmissionColor : vec3(0.0);   // EMISSION-GATE
 ${RW_MAIN_GLASS}
   vec3 albedo = max(elDecode(tex.rgb) - emission, vec3(0.0));
   vec3 ambient = uTrilight > 0.5 ? (n.y >= 0.0 ? mix(uAmbient, uAmbientSky, n.y) : mix(uAmbient, uAmbientGround, -n.y)) : uAmbient;   // EL6: the crevice loses its light at the resolve, off the frame's depth
