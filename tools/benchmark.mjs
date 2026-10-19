@@ -8,13 +8,14 @@
 // report in the law's run order, scores it with the law's own `scoreOf`, judges
 // it, and writes `<out>.json` + `<out>.md` (and, with `--profile`, `<out>.cpuprofile`).
 //
-// HOW TO RUN IT. This checkout has no ARENA2, so this file is written and pinned
-// but never run here; the run itself wants a machine with the game's data:
-//   node tools/benchmark.mjs                      # both pages on a local vite server, port 5237
-//   node tools/benchmark.mjs --headed            # the machine's own GPU - the number that matters
-//   node tools/benchmark.mjs --base https://daggerfalljs.dev
-//   node tools/benchmark.mjs --legs street,blade --reps 3 --profile --out bench-run
-//   node tools/benchmark.mjs --as-is --timeout 1200 --keep
+// HOW TO RUN IT. One command, and it launches the browser, the game and the run:
+//   npm run bench                                 # every leg this machine can play, headed, your own browser
+//   npm run bench -- --legs crowd,stream          # a subset, while the capital's route is unauthored
+//   npm run bench -- --as-is --keep               # measure the player's own settings, leave the window up
+//   npm run bench -- --headless --legs crowd      # a relative number for CI, on SwiftShader
+// THE FIRST RUN ASKS FOR THE DATA FOLDER, in the game's own dialog, and the run WAITS for you to
+// answer it (headless has nobody to, so there it refuses with the two ways past - `ARENA2_PATH`,
+// or a headed run). Set `ARENA2_PATH` in the environment to skip the dialog entirely.
 // Flags (each value flag is `--name value`; the switches take nothing):
 //   --base <url>      the deployed site to measure (default: run a local vite server)
 //   --port <n>        the local server's port                       (5237)
@@ -22,8 +23,11 @@
 //   --as-is           measure the player's own settings instead of the preset
 //   --reps <n>        run the whole thing n times; the median is what is written  (1)
 //   --out <basename>  the report's basename                        (benchmark-report)
-//   --headed          a visible browser on the machine's own GPU
+//   --headed          a visible browser on the machine's own GPU (the default)
+//   --headless        SwiftShader instead - a relative number, and it cannot answer the data dialog
 //   --profile         profile the fight legs (blade, bow, spell) on the dungeon page
+//   --boot <secs>     how long the game may take to boot and the run to appear - a person answering
+//                     the folder dialog counts here                          (900)
 //   --timeout <secs>  how long a page has to finish its whole run  (900)
 //   --keep            leave the browser open at the end
 //
@@ -71,10 +75,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from './lib/isMain.mjs';
-import { BENCH_LEG_IDS, BENCH_LEGS, benchUrl, censusOk, legsOf, parseLegs, scoreOf } from '../src/systems/bench/law.js';
+import { BENCH_LEG_IDS, BENCH_LEGS, BENCH_PINS, benchUrl, censusOk, legsOf, parseLegs, scoreOf } from '../src/systems/bench/law.js';
 import { DASH, legHead, legRow, reportLines } from '../src/ui/benchOverlay.js';
 import { aggregate } from './lib/cpuProfile.mjs';
-import { launchChromium } from './lib/browser.mjs';   // BENCH1: the ladder that finds the browser this machine actually has
+import { launchChromium } from './lib/browser.mjs';
+import { BENCH_TRACKS } from '../src/systems/bench/tracks.js';   // BENCH1: whether a route exists yet - a leg whose route is not authored is not asked for   // BENCH1: the ladder that finds the browser this machine actually has
 
 
 /** The repo root, which the local vite server serves and the law's URLs hang off. */
@@ -104,7 +109,7 @@ const PROFILE_POLL_MS = 150;
 const PROFILE_ROWS = 25;
 
 /** The value flags, in the order the refusal names them. */
-const FLAGS = Object.freeze(['--base', '--port', '--legs', '--reps', '--out', '--timeout']);
+const FLAGS = Object.freeze(['--base', '--port', '--legs', '--reps', '--out', '--timeout', '--boot']);
 
 /** The switches: on by their presence, and never given a value. */
 const SWITCHES = Object.freeze(['--as-is', '--headed', '--headless', '--profile', '--keep']);
@@ -118,6 +123,7 @@ const VALUE_HELP = Object.freeze({
   '--reps': 'how many whole runs to take the median of (1)',
   '--out': 'the basename of the report files (benchmark-report)',
   '--timeout': 'seconds to wait for a page\'s run (900)',
+  '--boot': 'seconds to wait for the game to boot and the run to appear (900) - a person answering the ARENA2 folder counts here, not against the run',
 });
 
 /** Every option's default, as one object, so `parseArgs` and its test cannot
@@ -132,7 +138,9 @@ const DEFAULTS = Object.freeze({
   out: 'benchmark-report',
   headed: true,   // HEADED BY DEFAULT: the benchmark is a thing you WATCH play itself on your own GPU, and a headless run is a relative number the report has to label (--headless opts out)
   profile: false,
-  timeout: 900,
+  timeout: 900,   // the RUN's own window: how long its legs may take once they start
+  boot: 900,      // THE BOOT's window: a city with world-data packs takes a while to stand up, and a
+                  // person answering the ARENA2 folder is not a slow benchmark
   keep: false,
 });
 
@@ -185,6 +193,7 @@ export function parseArgs(argv) {
     else if (flag === '--port') opts.port = whole(flag, value, 1, 65535);
     else if (flag === '--reps') opts.reps = whole(flag, value, 1, 100);
     else if (flag === '--timeout') opts.timeout = whole(flag, value, 1, 86400);
+  else if (flag === '--boot') opts.boot = whole(flag, value, 1, 86400);
     else if (flag === '--out') {
       if (!value.trim()) throw new Error(`benchmark: --out needs a basename - ${VALUE_HELP[flag]}`);
       opts.out = value;
@@ -540,36 +549,52 @@ async function runScene(page, planned, opts, wantProfile) {
     } catch (err) {
       throw new Error(`benchmark: could not open ${planned.url} - ${String(err?.message ?? err).trim()}`);
     }
-    // THE GAME'S ARENA2 GATE, ANSWERED BEFORE THE WAIT. Every door in this game asks for the data
-    // folder once (main.js awaits `ensureArena2()` before bootWorld, so a `?bench=` page shows the
-    // same screen Play does), and a headless page has nobody to pick it: the run would sit on the
-    // gate for the whole timeout and then report "never reached a report", which reads like a
-    // broken benchmark instead of a machine without the data. So the gate is asked about FIRST,
-    // and its answer names the two ways past it.
+    // THE GAME'S ARENA2 GATE. Every door in this game asks for the data folder once (main.js awaits
+    // `ensureArena2()` before bootWorld, so a `?bench=` page shows the same screen Play does). A
+    // HEADLESS page has nobody to pick it, so the gate is a refusal with the two ways past it. A
+    // HEADED page has the person who just typed the command - and the first cut threw there too,
+    // closing the dialog out from under them: the whole point of a window is that they answer it.
     const gated = await page.waitForFunction(`(() => {
       if (globalThis.__bench) return 'bench';
       const gate = !!document.querySelector('input[type=file]');
       const said = /select your arena2 folder/i.test(document.body?.innerText ?? '');
       return gate || said ? 'gate' : null;
     })()`, null, { timeout: 20000 }).then((h) => h.jsonValue()).catch(() => null);
-    if (gated === 'gate') {
-      throw new Error(`benchmark: the ${planned.scene} page is asking for the ARENA2 folder, and a headless run has no hand to answer it. `
-        + 'Point the dev server at your copy - `ARENA2_PATH=<path to your arena2 folder> npm run bench` - or start the run from the game\'s own '
-        + 'window, where it asks for the folder once and remembers it. (The URL is the law\'s to spell, not this message\'s.)'
+    if (gated === 'gate' && !opts.headed) {
+      throw new Error(`benchmark: the ${planned.scene} page is asking for the ARENA2 folder, and a HEADLESS run has no hand to answer it. `
+        + 'Rerun it headed (`npm run bench` opens a window where you pick the folder once and the browser remembers it), '
+        + 'or point the dev server at your copy - `$env:ARENA2_PATH = "<your arena2 folder>"; npm run bench`.'
         + (opts.base ? ` This run was against ${opts.base}, which serves its own data.` : ''));
     }
+    if (gated === 'gate') {
+      console.log(`bench: the ${planned.scene} page is asking for the ARENA2 folder - PICK IT IN THE WINDOW (once; the browser remembers it)`);
+    }
+    // AND THE BOOT IS NOT THE RUN. A city with its world-data packs takes a while to stand up, and a
+    // window that has not been answered yet is not a broken run: so the surface is waited for on its
+    // own budget (`--boot`) before the run's own window (`--timeout`) starts.
+    let up = gated === 'bench';
+    if (!up) {
+      up = await page.waitForFunction('!!globalThis.__bench', null, { timeout: opts.boot * 1000 })
+        .then(() => true)
+        .catch(() => false);
+    }
+    if (!up) {
+      failures.push(`the ${planned.scene} page never started the benchmark in ${opts.boot} s `
+        + (gated === 'gate' ? '(the ARENA2 folder was still being asked for - was it picked in the window?)' : '(the game was still booting)')
+        + ' - `--boot` raises the wait');
+    }
     let settled = false;
-    if (wantProfile) {
+    if (up && wantProfile) {
       const profiled = await profileFights(page, opts.timeout * 1000);
       profile = profiled.profile;
       settled = profiled.settled;             // the poll already waited out the run
     }
-    if (!settled) {
+    if (up && !settled) {
       settled = await page.waitForFunction(SETTLED, null, { timeout: opts.timeout * 1000 })
         .then(() => true)
         .catch(() => false);
     }
-    if (!settled) failures.push(`the ${planned.scene} page never reached a report in ${opts.timeout} s`);
+    if (up && !settled) failures.push(`the ${planned.scene} page never reached a report in ${opts.timeout} s`);
     const read = await page.evaluate(() => {
       const bench = globalThis.__bench;
       if (!bench) return null;
@@ -666,6 +691,19 @@ async function run(opts) {
       want: legsOf(scene).filter((leg) => opts.legs.includes(leg.id)).map((leg) => leg.id),
       url: benchUrl({ base, legs: opts.legs, asIs: opts.asIs, scene }),
     })).filter((page) => page.want.length);
+    // A LEG THAT CANNOT BE PLAYED YET IS NOT ASKED FOR. The street run replays a route that
+    // `npm run tracks` writes, and a fresh checkout has none - asking for it makes the first run red
+    // for a reason one command fixes. It is dropped from the request with a line saying why; an
+    // EXPLICIT `--legs street` still fails by name, because that is a promise the run breaks.
+    if (opts.legs.includes('street') && !BENCH_TRACKS?.[BENCH_PINS.loc]) {
+      console.log('bench: the street run is not in this run - no route is authored yet (`npm run tracks --headed` walks the capital and writes one)');
+      opts.legs = opts.legs.filter((id) => id !== 'street');
+      for (const page of plan) {
+        if (page.scene !== 'world') continue;
+        page.want = page.want.filter((id) => id !== 'street');
+        page.url = benchUrl({ base, legs: page.want, asIs: opts.asIs, scene: 'world' });
+      }
+    }
     for (const page of plan) console.log(`bench: the ${page.scene} page - ${page.url}`);
     browser = await launchBrowser(chromium, opts.headed
       ? { headless: false, args: NO_THROTTLE }
