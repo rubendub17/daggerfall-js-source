@@ -26,7 +26,7 @@ import { CLIP_SENTINEL } from '../world/terrain/terrainSurface.js';   // FAR-CLI
 const NO_SCREEN_OFFSET = Object.freeze([0, 0]);
 /** DRAW-SITES: every family a draw site increments, seeded by name in beginFrame - the one list the reset and the line
  *  both speak (a key missing here reads NaN through `| 0`, a silent zero in the census). */
-const SITE_KEYS = Object.freeze(['flat', 'flatKeys', 'flatOrigins', 'mesh', 'terr', 'water', 'screen', 'char', 'charRanges', 'snow']);
+const SITE_KEYS = Object.freeze(['flat', 'flatInst', 'flatKeys', 'flatOrigins', 'mesh', 'terr', 'water', 'screen', 'char', 'charRanges', 'snow']);
 
 const VS = `#version 300 es
 layout(location=0) in vec3 aPos;
@@ -573,6 +573,13 @@ uniform sampler2D uTex;   // ELITE FOES: the sprite's own size, for the pad's fl
 layout(location=2) in vec3 aNormal;
 layout(location=3) in vec4 aInst;
 layout(location=4) in float aScale;
+// BB-INSTANCED (2026-10-19, the draw census): THE PLACE PER COPY. A still flat's picture is ONE arena range shared by
+// every map pixel that stands it, and the pixel's offset used to be a UNIFORM - one value for a whole draw - so 653
+// different places meant 653 draws of the same quads. As a divisor-1 attribute the offset rides each copy instead and
+// one draw covers every copy. uOrigin stays for every caller that draws one at a time (the blended pass, the low-poly
+// trees, a dynamic batch, the air pass's emission replay): their arrays leave this one disabled, where a disabled
+// attribute reads (0, 0, 0) and the sum is exactly what it was.
+layout(location=5) in vec3 aOrigin;
 uniform float uMesh;
 uniform vec3 uMeshScale;
 uniform vec3 uMeshColor;
@@ -588,7 +595,7 @@ out float vAlpha;   // LPT1: what a texel's alpha is multiplied by (1 on a flat;
 out float vFade;    // LPT1: the crossfade - 1 whole; below 1 a far picture's share; 2..3 a tree's, 2 plus its share
 void main() {
   // Bottom-anchored: centre sits half a height above the placement base.
-  vBBBase = aCenter + uOrigin;
+  vBBBase = aCenter + uOrigin + aOrigin;
   // DISC29-E (Kristian B on Discord: interior light flickering, worst in the Mages Guild): A LAMP'S REPLAY TURNS EACH
   // FLAT TO FACE IT FROM ITS OWN CENTRE. One uRight a batch faced the lamp from the batch's origin - and a batch whose
   // centres are baked into its vertices has none (every interior flat: createBillboardBatch, origin null), so each card
@@ -612,7 +619,7 @@ void main() {
   vec2 ac = vec2(aCorner.x < 0.0 ? -0.5 : 0.5, aCorner.y);
   vec2 cu = vec2(mix(-0.5 - ep.x, 0.5 + ep.z, ac.x + 0.5), mix(-0.5 - ep.y, 0.5 + ep.w, ac.y + 0.5));
   vec2 cn = vec2(cu.x * fs, (cu.y + 0.5) * fs - 0.5);
-  vec3 world = aCenter + uOrigin
+  vec3 world = aCenter + uOrigin + aOrigin
     + right * (cn.x * uSize.x)
     + uUp * ((cn.y + 0.5) * uSize.y);
   // WIND3: THE FLATS LEAN WITH THE WIND. The lab's grass law (labGrass.js:
@@ -626,12 +633,12 @@ void main() {
   // WINDFALL1 (render/windfallSway.js): WHILE WINDFALL IS ON, ITS LAW IN WIND3'S PLACE - the top corners alone move,
   // by the flat's height (its own share of the batch's, LPT1) and its record's mask (uSway).
   if (uSway > 0.0 && windfallLaw()) {
-    world += windfallLean((aCenter + uOrigin).xz, right) * (uSway * uSize.y * fs * (aCorner.y + 0.5));
+    world += windfallLean((aCenter + uOrigin + aOrigin).xz, right) * (uSway * uSize.y * fs * (aCorner.y + 0.5));
   } else if (uSway > 0.0) {
     vec2 wv = uFlatWind.xy;
     float wl = length(wv);
     vec2 wdir = wl > 1e-4 ? wv / wl : vec2(1.0, 0.0);
-    vec3 root = aCenter + uOrigin;
+    vec3 root = aCenter + uOrigin + aOrigin;
     float along = dot(root.xz, wdir);
     float ph = fract(root.x * 0.37 + root.z * 0.91) * 6.2832;
     float gust = sin(uFlatWind.z * 1.7 - along * 0.35 + ph) * 0.5 + 0.5;
@@ -644,7 +651,7 @@ void main() {
   // up it laid along the fall's way by the angle; 0 for every batch but a falling tree's.
   if (uTip.z != 0.0) {
     float up = (cn.y + 0.5) * uSize.y;
-    world = aCenter + uOrigin + uRight * (cn.x * uSize.x)
+    world = aCenter + uOrigin + aOrigin + uRight * (cn.x * uSize.x)
       + vec3(uTip.x * sin(uTip.z) * up, cos(uTip.z) * up, uTip.y * sin(uTip.z) * up);
   }
   // Textures are bottom-up (v=0 = image bottom), so the quad top
@@ -1178,6 +1185,8 @@ export const BB_ARENA_QUADS = 16384;
 export const BB_ARENA_MAX_QUADS = 262144;
 /** AUDIT PERF-ARENA A5: the record homes kept before they start over (a home is a placement hint; a doll mints a key for good). */
 export const BB_ARENA_HOMES_MAX = 4096;
+/** BB-INSTANCED: the places (instances) an arena's shared slice is drawn at in one call before its buffer grows. */
+export const BB_ORIGIN_MIN = 64;
 /** The bytes a quad's four corners take (five floats a corner) and its six indices take. */
 const BB_QUAD_VERT_BYTES = 4 * 5 * 4, BB_QUAD_INDEX_BYTES = 6 * 4;
 /**
@@ -1997,6 +2006,12 @@ export class Renderer {
     this._bbArenas = [];
     /** PERF-ARENA2: a record's arena - `${archive}_${record}` -> the arena its last still batch went to */
     this._bbArenaOfKey = new Map();
+    /** BB-INSTANCED: a record's SHARED range - `${archive}_${record}` -> { rec, count, q0, arena, verts, refs }. One
+     *  copy of the quads, stood by every place that draws that picture; given back when the LAST place lets go. Which
+     *  batch holds which is a WeakMap, so no field is written onto a batch (perfextb weighs that record). */
+    this._bbSlots = new Map();
+    this._bbSlotOf = new WeakMap();
+    this._bbOrigins = new Float32Array(BB_ORIGIN_MIN * 3);   // a run's places, uploaded a group at a time
     this._bbIndex = null;   // AUDIT PERF-ARENA A4: the arenas' one index buffer { ib, cap }, made with the first arena
     // PERF-VAO1 (PERF-NEXT item 6): ONE bindVao FOR THE LIFE OF THE RENDERER. _renderPasses minted this closure every
     // frame and handed it to the shadow and air passes - a new call target at their `f.bindVao(vao)` every frame (in node,
@@ -6798,13 +6813,69 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 20, 0);
     gl.enableVertexAttribArray(1);
     gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 12);
+    // BB-INSTANCED: THE PLACES, one vec3 a copy, on this arena's own array (a divisor-1 attribute is the VAO's state).
+    // Grown when a slice is stood in more places than it started with; only the billboard pass binds it.
+    const ob = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, ob);
+    gl.bufferData(gl.ARRAY_BUFFER, BB_ORIGIN_MIN * 12, gl.DYNAMIC_DRAW);
+    // BB-INSTANCED: the POINTER and the DIVISOR are this array's; the ENABLE is the instanced draw's alone (flushRun). Enabled
+    // here it would be instance 0's place on every other draw of this array - a run of one, a concealed flat, the air pass's
+    // bloom of a lamp, a shadow caster - so each would wear the last run's first place.
+    gl.vertexAttribPointer(5, 3, gl.FLOAT, false, 0, 0);
+    gl.vertexAttribDivisor(5, 1);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
     this._bindVao(null);
-    const a = { vao, vb, cap, free: [0, cap], taken: 0 };
+    const a = { vao, vb, cap, free: [0, cap], taken: 0, ob, originCap: BB_ORIGIN_MIN };
     this._bbArenas.push(a);
     a.taken = arenaTake(a.free, quads);
     if (key != null) this._bbArenaOfKey.set(key, a);
     return a;
+  }
+
+  /**
+   * BB-INSTANCED: the shared range a record's picture already has, when this call builds THE SAME quads - or null. The
+   * vertices are COMPARED, not trusted: the key is the record, and a record stood in a different shape (another frame's
+   * centres, a host re-authoring a pixel) must not inherit the range.
+   */
+  _bbSlotHeld(rec, count, verts) {
+    const held = this._bbSlots.get(rec);
+    if (!held || held.count !== count) return null;
+    const v = held.verts;
+    if (v.length !== verts.length) return null;
+    for (let i = 0; i < v.length; i++) if (v[i] !== verts[i]) return null;
+    return held;
+  }
+
+  /** BB-INSTANCED: a range's own copy of the quads (the check above) and its first stander. */
+  _bbSlotHold(rec, count, verts, arena, q0) {
+    const slot = { rec, count, q0, arena, verts: verts.slice(), refs: 0 };
+    this._bbSlots.set(rec, slot);
+    return slot;
+  }
+
+  /** BB-INSTANCED: one more place stands that range, and this batch is how it is let go again. */
+  _bbSlotRef(batch, slot) {
+    slot.refs++;
+    this._bbSlotOf.set(batch, slot);
+  }
+
+  /**
+   * BB-INSTANCED: a batch about to REWRITE its range takes one of its own, while other places still stand the picture -
+   * two map pixels' cards share the quads, so writing the moved corners into the shared range would re-shape the other's,
+   * and the copy the slot keeps would describe bytes that are no longer there. Answers true when it moved (the caller
+   * writes into the new range); the range it leaves is the picture's still, for the places that remain.
+   */
+  _bbUnshare(batch) {
+    const slot = this._bbSlotOf.get(batch);
+    if (!slot || slot.refs <= 1) return false;
+    const arena = this._bbArenaFor(batch._quads, slot.rec);
+    this._bbSlotOf.delete(batch);
+    slot.refs--;
+    batch._arena = arena;
+    batch._q0 = arena.taken;
+    batch._ibOff = batch._q0 * BB_QUAD_INDEX_BYTES;
+    batch.vao = arena.vao;
+    return true;
   }
 
   /**
@@ -6877,14 +6948,24 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
 
     // PERF-ARENA: a still batch takes a range of an arena's quads - its corners written where the range starts, its
     // indices the arena's own (the same six a quad, written at the arena's birth) - and owns no buffer of its own
-    let vao, buffers, arena = null, q0 = 0;
+    let vao, buffers, arena = null, q0 = 0, slot = null;
     if (!dynamic && count > 0 && this._bbArenas) {
-      arena = this._bbArenaFor(count, `${archive}_${record}`);   // PERF-ARENA2: by its record, as the main pass sorts
-      q0 = arena.taken;
-      vao = arena.vao;
-      buffers = [];
-      gl.bindBuffer(gl.ARRAY_BUFFER, arena.vb);
-      gl.bufferSubData(gl.ARRAY_BUFFER, q0 * BB_QUAD_VERT_BYTES, verts);
+      const rec = `${archive}_${record}`;
+      // BB-INSTANCED: THE SAME PICTURE IN THE SAME SHAPE IS ONE RANGE, stood by every place that draws it - each call used
+      // to take a fresh one, so two map pixels standing one record owned two copies of the same quads and drew them in
+      // two calls. Keyed by the record, checked by CONTENT (the vertices are kept beside the range for exactly that: a
+      // same-count batch of another picture, or a record re-authored, must not inherit it).
+      slot = this._bbSlotHeld(rec, count, verts);
+      if (slot) { arena = slot.arena; q0 = slot.q0; vao = arena.vao; buffers = []; }
+      else {
+        arena = this._bbArenaFor(count, rec);   // PERF-ARENA2: by its record, as the main pass sorts
+        q0 = arena.taken;
+        vao = arena.vao;
+        buffers = [];
+        gl.bindBuffer(gl.ARRAY_BUFFER, arena.vb);
+        gl.bufferSubData(gl.ARRAY_BUFFER, q0 * BB_QUAD_VERT_BYTES, verts);
+        slot = this._bbSlotHold(rec, count, verts, arena, q0);
+      }
     } else {
       vao = gl.createVertexArray();
       this._bindVao(vao);
@@ -6958,7 +7039,7 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     // IDLER-STICKY: `_shIdler`, a flat whose look changed where it stands - a mover for good (shadowPass.js), born undefined.
     // MWNPC5b: `castOnly` - a foe standing in its Morrowind body: the billboard draws nothing, born undefined (MWNPC16: and
     // casts nothing - the body casts its own shape, shadowPass.js recordCharacter).
-    return {
+    const batch = {
       vao, indexCount: count * 6, archive, record, size, buffers, origin: null, frame: null, bounds, _quads: count, _dyn: !!dynamic,
       _arena: arena, _q0: q0, _ibOff: q0 * BB_QUAD_INDEX_BYTES,
       _scales: scales ?? null, lptProto: undefined, farH: undefined,
@@ -6970,6 +7051,8 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       _shRec: undefined, _shFlip: undefined, _shDyn: undefined, _shSway: undefined, _shMovedAt: undefined, _shId: undefined,
       _shAnim: undefined, _shIdler: undefined,
     };
+    if (slot) this._bbSlotRef(batch, slot);   // BB-INSTANCED: this place stands that picture's one range
+    return batch;
   }
 
   /**
@@ -7008,8 +7091,16 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
         verts[o + 4] = BB_CORNERS[k][1];
       }
     }
-    gl.bindBuffer(gl.ARRAY_BUFFER, batch._arena ? batch._arena.vb : batch.buffers[0]);   // PERF-ARENA: a still batch's corners are its arena's range
-    gl.bufferSubData(gl.ARRAY_BUFFER, batch._arena ? batch._q0 * BB_QUAD_VERT_BYTES : 0, verts, 0, count * 20);
+    // BB-INSTANCED: A SHARED RANGE IS NO LONGER THIS BATCH'S TO REWRITE. Two map pixels standing one picture own one range,
+    // so moving one of them would re-shape the other's cards - and the copy `_bbSlotHeld` keeps would then describe bytes
+    // that are not there. A batch that moves while another place stands its picture takes a range of its own first.
+    if (batch._arena && this._bbUnshare(batch)) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, batch._arena.vb);
+      gl.bufferSubData(gl.ARRAY_BUFFER, batch._q0 * BB_QUAD_VERT_BYTES, verts, 0, count * 20);
+    } else {
+      gl.bindBuffer(gl.ARRAY_BUFFER, batch._arena ? batch._arena.vb : batch.buffers[0]);   // PERF-ARENA: a still batch's corners are its arena's range
+      gl.bufferSubData(gl.ARRAY_BUFFER, batch._arena ? batch._q0 * BB_QUAD_VERT_BYTES : 0, verts, 0, count * 20);
+    }
     // PERF-EXT1: the placements the shadow pass asks are the ones it was
     // BORN with - moved, they speak for nothing, and a batch tested where
     // it was built casts nothing where it is (the draw lens's prover: a
@@ -7062,6 +7153,16 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
    *  second free and no replay can reach the range a later batch takes (every replay skips a batch with no VAO). */
   _bbArenaFree(batch) {
     const a = batch._arena;
+    // BB-INSTANCED: A SHARED RANGE GOES BACK WHEN ITS LAST PLACE DOES. Giving it back while another map pixel still draws
+    // it would hand the range to the next picture written there, and that pixel's cards would wear it - the silent wrong
+    // sprite this refcount exists for.
+    const slot = this._bbSlotOf.get(batch);
+    if (slot) {
+      this._bbSlotOf.delete(batch);
+      if (--slot.refs > 0) { batch._arena = null; batch.vao = null; return; }
+      if (this._bbSlots.get(slot.rec) === slot) this._bbSlots.delete(slot.rec);   // a record re-authored while this slot stood keeps the newer one
+      slot.verts = null;
+    }
     arenaGive(a.free, batch._q0, batch._quads);
     batch._arena = null;
     batch.vao = null;
@@ -8268,10 +8369,10 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     // another program (a lane swapped between two calls). A flip is the
     // sign of `w`, compared by value like the rest.
     let lastW = NaN, lastH = NaN, lastOx = NaN, lastOy = NaN, lastOz = NaN;
-    const drawOne = (b) => {
+    const drawOne = (b, dry = false) => {
       const key = billboardKey(b);   // FA1/MAC4: the key follows every field it is made of (billboardKey.js)
       const tex = this.textures.get(key) ?? this._textureMissed(key);   // FIELD BUGS 2026-10-04d PLACE-LRU: a picture let go is made again
-      if (!tex) return;
+      if (!tex) return false;   // BB-INSTANCED: no picture, no draw - and no run either (flushRun's first batch)
       // CSA-B: `emissionOff` - a flat whose material's _EmissionColor is black (Come Sail Away's SetLights on an
       // unlit lantern) binds no emission map; a change of it forgets the last key, so a lit and an unlit lantern of
       // one record never share a bind (and a pass with no such flat never rebinds for it)
@@ -8290,7 +8391,8 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       const w = b.size.w, h = b.size.h;
       if (w !== lastW || h !== lastH) { gl.uniform2f(this.bbUSize, w, h); lastW = w; lastH = h; }   // PERF-EXT11
       const o = b.origin || ZERO_ORIGIN;
-      if (o[0] !== lastOx || o[1] !== lastOy || o[2] !== lastOz) { gl.uniform3f(this.bbUOrigin, o[0], o[1], o[2]); lastOx = o[0]; lastOy = o[1]; lastOz = o[2]; (this.stats.sites ??= {}).flatOrigins++; }   // PERF-EXT11   // DRAW-SITES: an origin upload is state a multi-draw could not share
+      // BB-INSTANCED: a run's places ride aOrigin instead, so `dry` (the run's first batch, its state alone) sends none.
+      if (!dry && (o[0] !== lastOx || o[1] !== lastOy || o[2] !== lastOz)) { gl.uniform3f(this.bbUOrigin, o[0], o[1], o[2]); lastOx = o[0]; lastOy = o[1]; lastOz = o[2]; (this.stats.sites ??= {}).flatOrigins++; }   // PERF-EXT11   // DRAW-SITES: an origin upload is state a multi-draw could not share
       const sw = swayShare(b, wfLaw);   // WIND3: the batch's share of the lean, uploaded when it changes between batches; WINDFALL1: its mask under the mod's law
       if (sw !== lastSway) { gl.uniform1f(this.bbUSway, sw); lastSway = sw; }
       const tp = b.tip;   // PROF4: a felled tree's fall ([x, z, angle]); every other batch stands
@@ -8315,9 +8417,12 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       const lc = b.lptProto && this._lpt?.cut.has(b.lptProto) ? 1 : 0;   // LPT1: a far picture gives way to its 3D tree near the eye - sent when that changes between batches
       if (lc !== this._bbLptCutOn) { this._uploadLptCut(lc); this._bbLptCutOn = lc; }
       this._bindVao(b.vao);
+      if (dry) return true;   // BB-INSTANCED: the run's first batch, its state alone - the caller draws every copy in one call
       gl.drawElements(gl.TRIANGLES, b.indexCount, gl.UNSIGNED_INT, b._ibOff | 0);   // PERF-ARENA: a still batch's range of its arena's indices
       this.stats.draws++;
-      (this.stats.sites ??= {}).flat++;
+      const sites = this.stats.sites ??= {};
+      sites.flat++; sites.flatInst = (sites.flatInst | 0) + 1;
+      return true;
     };
     gl.uniform1i(this.bbUSpectral, 0);
     gl.uniform4f(this.bbUConceal, 0, 0, 0, 0);   // ECV1: plain unless a batch says otherwise
@@ -8338,7 +8443,51 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       opaque.push(b);
     }
     sortByKey(opaque);   // LA-COST2: the key order the string sort gave (a depth tie keeps its first-drawn flat), by bucket (billboardKey.js)
-    for (const b of opaque) drawOne(b);
+    // BB-INSTANCED (2026-10-19, the draw census): ONE PICTURE AT EVERY PLACE IT STANDS, IN ONE CALL. A key's batches share
+    // one arena range, so a run that also agrees on every value the program reads is drawn by one drawElementsInstanced,
+    // its places uploaded as the run's own aOrigin. A run of one takes the same path (an instance count of 1). A batch
+    // with no shared range - a DYNAMIC one, whose centres move - falls back to its own draw, exactly as before.
+    let run = null, runList = null;
+    const sameRun = (a, b) => a.vao === b.vao && a._ibOff === b._ibOff && a.indexCount === b.indexCount
+      && a.frame === b.frame && a.size.w === b.size.w && a.size.h === b.size.h && swayShare(a, wfLaw) === swayShare(b, wfLaw)
+      && (a.tip ?? null) === (b.tip ?? null) && (a.glint ?? null) === (b.glint ?? null)
+      && (a.elitePad ?? null) === (b.elitePad ?? null) && (a.dissolve ?? null) === (b.dissolve ?? null)
+      && (a.crack ?? null) === (b.crack ?? null) && (a.tint ?? null) === (b.tint ?? null)
+      && (a.dye ?? 0) === (b.dye ?? 0) && (a.hitFlash || 0) === (b.hitFlash || 0) && (a.eliteGlow || 0) === (b.eliteGlow || 0)
+      && !!a.emissionOff === !!b.emissionOff && (!!(dwc && a.dwColumn)) === (!!(dwc && b.dwColumn))
+      && (a.lptProto && this._lpt?.cut.has(a.lptProto) ? 1 : 0) === (b.lptProto && this._lpt?.cut.has(b.lptProto) ? 1 : 0);
+    const flushRun = () => {
+      if (!run) return;
+      // A RUN OF ONE IS ITS OWN DRAW. The instanced path costs two GL calls to carry the places (the buffer's bind and
+      // its upload) and saves one; on a single batch it is a loss, and many interiors draw their flats a call at a time.
+      if (runList.length === 1) { drawOne(run); run = null; runList = null; return; }
+      const a = run._arena, n = runList.length;
+      // uOrigin goes to zero ONCE, and only when it is not there already: a call that follows another call's run must not
+      // re-send it, which is the second call's whole economy (LA-COST1)
+      if (lastOx !== 0 || lastOy !== 0 || lastOz !== 0) { gl.uniform3f(this.bbUOrigin, 0, 0, 0); lastOx = 0; lastOy = 0; lastOz = 0; }
+      if (!drawOne(run, true)) { run = null; runList = null; return; }   // no picture, no run: a missing texture draws nothing
+      if (n * 3 > this._bbOrigins.length) this._bbOrigins = new Float32Array(Math.max(n * 3, this._bbOrigins.length * 2));
+      const out = this._bbOrigins;
+      for (let i = 0; i < n; i++) { const o = runList[i].origin || ZERO_ORIGIN; out[i * 3] = o[0]; out[i * 3 + 1] = o[1]; out[i * 3 + 2] = o[2]; }
+      gl.bindBuffer(gl.ARRAY_BUFFER, a.ob);
+      if (n > a.originCap) { a.originCap = Math.max(n, a.originCap * 2); gl.bufferData(gl.ARRAY_BUFFER, a.originCap * 12, gl.DYNAMIC_DRAW); }
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, out, 0, n * 3);
+      gl.enableVertexAttribArray(5);   // this draw only: the places it just uploaded
+      gl.drawElementsInstanced(gl.TRIANGLES, run.indexCount, gl.UNSIGNED_INT, run._ibOff | 0, n);
+      gl.disableVertexAttribArray(5);
+      this.stats.draws++;
+      (this.stats.sites ??= {}).flat++;
+      this.stats.sites.flatInst = (this.stats.sites.flatInst | 0) + n;
+      run = null; runList = null;
+    };
+    for (const b of opaque) {
+      if (!b._arena) { flushRun(); drawOne(b); continue; }   // a dynamic batch: its own draw
+      if (run && !sameRun(run, b)) flushRun();
+      // the run's state is set ONCE, at its flush - a run of one takes drawOne's own draw, with its state sent once
+      if (!run) { run = b; runList = []; }
+      runList.push(b);
+    }
+    flushRun();
     opaque.length = 0;
     // LPT1: THE LOW-POLY TREES, on this program with this frame's light - and the lasts forgotten, since they bind their
     // own atlases and send their own size and origin. Drawn ONCE: the frame's set is spent here, so a later call this

@@ -210,7 +210,7 @@ test('EL2: the receiver block and the depth shaders - six uniforms, no dynamic m
   assert.ok(!EL_FAR_RING_FS.includes('uSunShadow'), 'the far ring receives no shadow');
   assert.equal(EL_LANE.shadows, true);
   const r = read('src/render/renderer.js');
-  assert.match(r, /out vec3 vBBBase;/); assert.match(r, /vBBBase = aCenter \+ uOrigin;/);
+  assert.match(r, /out vec3 vBBBase;/); assert.match(r, /vBBBase = aCenter \+ uOrigin \+ aOrigin;/, 'EL2: the base the lane\'s shadow is read at (BB-INSTANCED: plus the copy\'s own place)');
   assert.ok(!/uSunShadow/.test(r.slice(0, r.indexOf('export class Renderer'))), 'no classic shader receives a shadow');
 });
 
