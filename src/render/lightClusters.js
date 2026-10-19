@@ -180,7 +180,8 @@ export function buildLightClusters(lights, count, view, proj, space) {
     touched++;
     const z0 = box[at + 4], z1 = box[at + 5];
     for (let cz = z0; cz <= z1; cz++) {
-      const [x0, x1, y0, y1] = tilesIn(box, at, cz, t4);
+      tilesIn(box, at, cz, t4);   // AUDIT LC1: read off the scratch by index - the destructuring of it was an iterator in the innermost loop
+      const x0 = t4[0], x1 = t4[1], y0 = t4[2], y1 = t4[3];
       total += (x1 - x0 + 1) * (y1 - y0 + 1);
       for (let cy = y0; cy <= y1; cy++) {
         const row = cy * CLUSTER_X + cz * CLUSTER_X * CLUSTER_Y;
@@ -203,7 +204,8 @@ export function buildLightClusters(lights, count, view, proj, space) {
     if (box[at] < 0) continue;
     const z0 = box[at + 4], z1 = box[at + 5];
     for (let cz = z0; cz <= z1; cz++) {
-      const [x0, x1, y0, y1] = tilesIn(box, at, cz, t4);
+      tilesIn(box, at, cz, t4);   // AUDIT LC1: read off the scratch by index - the destructuring of it was an iterator in the innermost loop
+      const x0 = t4[0], x1 = t4[1], y0 = t4[2], y1 = t4[3];
       for (let cy = y0; cy <= y1; cy++) {
         const row = cy * CLUSTER_X + cz * CLUSTER_X * CLUSTER_Y;
         for (let cx = x0; cx <= x1; cx++) {

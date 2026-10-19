@@ -2243,7 +2243,7 @@ export class Renderer {
       this._warned2dForeign = true;
       console.warn('PERF-2D: a foreign pass ran inside an open 2D run - it drew with DEPTH_TEST and CULL_FACE off. Call renderer.endUiRun() before the pass.',
         `\n  the pass that found it: ${new Error().stack?.split('\n').slice(2, 6).join(' <- ') ?? '?'}`,
-        `\n  the run it found: ${this._2dOpenedBy?.stack?.split('\n').slice(2, 8).join(' <- ') ?? '?'}`);
+        `\n  the run it found: ${this._2dOpenedBy ?? '?'}`);
     }
     this._close2D();
     this.gl.bindVertexArray(null);
@@ -3203,13 +3203,17 @@ export class Renderer {
    *  a world draw runs with no depth test and no culling, which is the
    *  2026-08-23 "sky-blue screen" regression wearing the other face -
    *  so the pin is a source pin and cannot go vacuous. */
-  _open2D(vao) {
+  _open2D(vao, what = 'a 2D primitive') {
     if (!this._2dVao) {
       const gl = this.gl;
       // FIELD 2026-09-27 (a player's online session raised the warning below and it named nobody): until the
-      // warning has spoken, the run keeps WHERE it opened - an Error, its stack formatted only if a foreign pass
-      // then lands inside it - so the one line a player sends names the draw that opened the run.
-      if (!this._warned2dForeign) this._2dOpenedBy = new Error('PERF-2D: the 2D run opened here');
+      // warning has spoken, the run keeps WHAT opened it - the primitive's own name, handed in by the caller - so
+      // the one line a player sends names the draw that opened the run.
+      // PERF-2D (2026-10-20): it used to keep `new Error(...)` here for that stack, and this was the hottest line in
+      // this file - a run opens on every world/UI alternation (`_close2D` drops the VAO), so a town frame built a
+      // dozen Errors and captured a dozen stacks to answer a question nobody asked. The name is the better answer and
+      // costs nothing; only four primitives ever open a run, and each says which one it is.
+      if (!this._warned2dForeign) this._2dOpenedBy = what;
       gl.disable(gl.DEPTH_TEST);
       // HANDEDNESS REGRESSION (2026-08-23, "the sky-blue screen"): a 2D
       // blit has no facing, but with CULL_FACE left ON the global
@@ -4810,7 +4814,7 @@ void main() {
     this._compositeAir();   // EL3: a no-op unless a render is owed
     this._ensureScreenQuadProgram();
     this._use(this.screenQuadProgram);
-    this._open2D(this._screenQuadVao);   // PERF-2D: a RUN's bracket, not a quad's
+    this._open2D(this._screenQuadVao, 'drawScreenQuad');   // PERF-2D: a RUN's bracket, not a quad's
     const ox = this._screenOffset?.[0] ?? 0, oy = this._screenOffset?.[1] ?? 0;
     gl.uniform4f(this._screenQuad.dst, dst.x + ox, dst.y + oy, dst.w, dst.h);
     // PERF-UI: THE FOUR THAT ARE NOT A QUAD'S OWN. `dst` and `src` above
@@ -4898,7 +4902,7 @@ void main() {
     this._compositeAir();
     this._ensureScreenQuadProgram();   // its VAO is the quad this draws
     this._ensureWeaponGlowQuadProgram();
-    this._open2D(this._screenQuadVao);
+    this._open2D(this._screenQuadVao, 'the weapon glow\'s quad');
     const aw = Math.max(1, Math.round(frame?.art?.[0] ?? (dst.w * 320) / gl.drawingBufferWidth));
     const ah = Math.max(1, Math.round(frame?.art?.[1] ?? (dst.h * 200) / gl.drawingBufferHeight));
     const cutL = dst.x <= 0.5, cutR = dst.x + dst.w >= (frame?.view?.[0] ?? Infinity) - 0.5;
@@ -5129,7 +5133,7 @@ void main() {
       a[o + 4] = src.u0; a[o + 5] = src.v0; a[o + 6] = src.u1; a[o + 7] = src.v1;
     }
     this._use(this.screenQuadRunProgram);
-    this._open2D(this._screenQuadRunVao);   // PERF-2D
+    this._open2D(this._screenQuadRunVao, 'drawScreenQuadRun');   // PERF-2D
     gl.bindBuffer(gl.ARRAY_BUFFER, this._screenQuadRunVbo);
     if (this._screenQuadRunCap < n) { gl.bufferData(gl.ARRAY_BUFFER, a.byteLength, gl.STREAM_DRAW); this._screenQuadRunCap = a.length / 8; }
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, a, 0, n * 8);
@@ -5228,7 +5232,7 @@ void main() {
     this._tex0Bound = null;   // PERF-TEX3: this path owns unit 0 - the shadow may not speak for it
     gl.uniform1i(this._overlay.tex, 0);
     gl.uniform2f(this._overlay.uv1, u1, v1);
-    this._open2D(this._overlayVAO);   // PERF-2D
+    this._open2D(this._overlayVAO, 'the overlay quad');   // PERF-2D
     gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
     this.stats.texBinds++; this.stats.draws++;
     (this.stats.sites ??= {}).screen++;
@@ -8370,6 +8374,7 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     // another program (a lane swapped between two calls). A flip is the
     // sign of `w`, compared by value like the rest.
     let lastW = NaN, lastH = NaN, lastOx = NaN, lastOy = NaN, lastOz = NaN;
+    const sites = this.stats.sites ??= {};   // DRAW-SITES: fetched once per call, not once per draw (this was three reads of the same object inside the closure)
     const drawOne = (b) => {
       const key = billboardKey(b);   // FA1/MAC4: the key follows every field it is made of (billboardKey.js)
       const tex = this.textures.get(key) ?? this._textureMissed(key);   // FIELD BUGS 2026-10-04d PLACE-LRU: a picture let go is made again
@@ -8379,7 +8384,7 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       // one record never share a bind (and a pass with no such flat never rebinds for it)
       if (!!b.emissionOff !== lastDark) { lastDark = !!b.emissionOff; lastKey = null; }
       if (key !== lastKey) {
-        (this.stats.sites ??= {}).flatKeys++;   // DRAW-SITES: a texture bind - as many of these as there are draws means no run to merge
+        sites.flatKeys++;   // DRAW-SITES: a texture bind - as many of these as there are draws means no run to merge
         this._activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, tex);
         this._activeTexture(gl.TEXTURE1);
@@ -8392,7 +8397,7 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       const w = b.size.w, h = b.size.h;
       if (w !== lastW || h !== lastH) { gl.uniform2f(this.bbUSize, w, h); lastW = w; lastH = h; }   // PERF-EXT11
       const o = b.origin || ZERO_ORIGIN;
-      if (o[0] !== lastOx || o[1] !== lastOy || o[2] !== lastOz) { gl.uniform3f(this.bbUOrigin, o[0], o[1], o[2]); lastOx = o[0]; lastOy = o[1]; lastOz = o[2]; (this.stats.sites ??= {}).flatOrigins++; }   // PERF-EXT11   // DRAW-SITES: an origin upload is state a multi-draw could not share
+      if (o[0] !== lastOx || o[1] !== lastOy || o[2] !== lastOz) { gl.uniform3f(this.bbUOrigin, o[0], o[1], o[2]); lastOx = o[0]; lastOy = o[1]; lastOz = o[2]; sites.flatOrigins++; }   // PERF-EXT11   // DRAW-SITES: an origin upload is state a multi-draw could not share
       const sw = swayShare(b, wfLaw);   // WIND3: the batch's share of the lean, uploaded when it changes between batches; WINDFALL1: its mask under the mod's law
       if (sw !== lastSway) { gl.uniform1f(this.bbUSway, sw); lastSway = sw; }
       const tp = b.tip;   // PROF4: a felled tree's fall ([x, z, angle]); every other batch stands
@@ -8419,7 +8424,6 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       this._bindVao(b.vao);
       gl.drawElements(gl.TRIANGLES, b.indexCount, gl.UNSIGNED_INT, b._ibOff | 0);   // PERF-ARENA: a still batch's range of its arena's indices
       this.stats.draws++;
-      const sites = this.stats.sites ??= {};
       sites.flat++;
       sites.flatQuads = (sites.flatQuads | 0) + (b._quads | 0);   // DRAW-SITES: the geometry half's own number - the quads this draw carried
     };
@@ -8678,9 +8682,13 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
         // being re-minted on every one of those misses.
         const key = sm._evKey ?? (sm._evKey = `${sm.textureArchive}_${sm.textureRecord}`);
         const resolved = texRemap && texRemap.has(key) ? texRemap.get(key) : key;
+        // PERF-MISS (2026-10-20): the OPAQUE variant's name is made once per resolved picture and kept beside it. This
+        // is the MISS path by design - a streaming sub-mesh is deliberately not stamped, so an archetype standing in N
+        // pixels misses N times a frame - and it minted the same concatenation on every one of those.
+        if (sm._evOpaqueOf !== resolved) { sm._evOpaqueOf = resolved; sm._evOpaqueKey = resolved + '#opaque'; }
         // FIELD BUGS 2026-10-04d PLACE-LRU: a material let go is made again BEFORE the flat's cutout of the same record
         // can stand in for it (the INCIDENT 2026-09-04 slits)
-        tex = this.textures.get(resolved + '#opaque') ?? this._textureMissed(resolved + '#opaque') ?? this.textures.get(resolved) ?? this._textureMissed(resolved);   // the mesh material (alphaIndex -1) first
+        tex = this.textures.get(sm._evOpaqueKey) ?? this._textureMissed(sm._evOpaqueKey) ?? this.textures.get(resolved) ?? this._textureMissed(resolved);   // the mesh material (alphaIndex -1) first
         if (tex) {
           sm._evTex = tex;
           sm._evEmis = this.emissionTextures.get(resolved) || this._blackTex;

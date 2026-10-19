@@ -1155,6 +1155,8 @@ export class ShadowPass {
     this._cubeArgs = new Float64Array(5);   // PERF-ALLOC2: _candidateQuads' cube for placementsInCubeOf
     this._selfAt = new Float64Array(3);    // DISC29-E: where the player's own card stands this frame (_selfCardAt)
     this._selfCard = null;                 // AUDIT PRE-MERGE 0929 E2: the card, noted as recordBillboards meets it (cleared by discard)
+    this._posLo = /** @type {number[]} */ (null);       // PERF-FLICKER: the lo-slot pass's light position, one array not one a light a frame
+    this._posRender = /** @type {number[]} */ (null);   // ...and the render pass's, its own (the two never hold at once)
     this._slotOfScratch = new Int32Array(SHADOW_POINT_CASTERS);   // SC1: rank -> slot
     this._slotOwnScratch = new Uint8Array(SHADOW_POINT_CASTERS);  // LIGHT-ID: rank -> 1 when its slot is its own by identity
     this._heldCasters = new Float64Array(4 * SHADOW_POINT_CASTERS);   // DISC6: last frame's casters, by position (Float64: an exact copy of whatever the host sent, so the match by position holds)
@@ -1283,7 +1285,8 @@ export class ShadowPass {
       const j = slotOf[i];
       if (j < 0) continue;
       const o = j * 4;
-      const pos = [L[i * 4], L[i * 4 + 1], L[i * 4 + 2]];
+      const pos = this._posLo ??= [0, 0, 0];   // PERF-FLICKER: one scratch, not a fresh array a light a frame
+      pos[0] = L[i * 4]; pos[1] = L[i * 4 + 1]; pos[2] = L[i * 4 + 2];
       const same = this._loBuilt[j] && sl[o] === pos[0] && sl[o + 1] === pos[1] && sl[o + 2] === pos[2];
       const far = same ? heldShadowFar(sl[o + 3], L[i * 4 + 3]) : shadowFarFor(L[i * 4 + 3]);   // LA-SHADOW4: held across the flicker
       const fresh = !same || sl[o + 3] !== far;
@@ -1883,7 +1886,8 @@ export class ShadowPass {
     let selfN = 0;   // AUDIT FLICKER P2: the card's lamps this frame, held for the next
     for (let rank = 0; rank < casters.length; rank++) {
       const i = casters[rank], k = slotOf[rank];
-      const pos = [L[i * 4], L[i * 4 + 1], L[i * 4 + 2]];
+      const pos = this._posRender ??= [0, 0, 0];   // PERF-FLICKER: one scratch, not a fresh array a light a frame
+      pos[0] = L[i * 4]; pos[1] = L[i * 4 + 1]; pos[2] = L[i * 4 + 2];
       // PERF-FLICKER: the SHADOW's far, not the lantern's live one - the
       // flicker must not count as "this light changed" and rebuild six
       // faces. Everything below takes this value (the face matrices, the

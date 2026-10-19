@@ -403,9 +403,11 @@ export function heldGlareRange(held, live) {
 /** LA-POST2: a light's place as one number - an eighth of a unit a step, 2^17 steps an axis (wrapping), so the key is
  *  an exact double and a static light, whose position is the same float every frame, finds its own held range. */
 const GLARE_KEY_SPAN = 131072;
+// PERF-GLAREKEY: the quantiser at module scope - it was minted as a fresh closure on every call, and this is asked
+// once a light a frame by the glare pass and again by the hold's own walk.
+const glareQ = (v) => ((Math.round(v * 8) % GLARE_KEY_SPAN) + GLARE_KEY_SPAN) % GLARE_KEY_SPAN;
 export function glareKey(x, y, z) {
-  const q = (v) => ((Math.round(v * 8) % GLARE_KEY_SPAN) + GLARE_KEY_SPAN) % GLARE_KEY_SPAN;
-  return (q(x) * GLARE_KEY_SPAN + q(y)) * GLARE_KEY_SPAN + q(z);
+  return (glareQ(x) * GLARE_KEY_SPAN + glareQ(y)) * GLARE_KEY_SPAN + glareQ(z);
 }
 
 /** LA-POST1 (2026-09-27, Mac: "look for flickering issues"): THE BRIGHT PASS'S TAPS, in full-resolution pixels off a
