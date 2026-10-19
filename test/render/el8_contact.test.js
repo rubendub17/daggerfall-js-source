@@ -208,8 +208,13 @@ test('EL8: the cadence - the far cascade every other frame, the near casters eve
 test('EL8: the perf readout - the door, the line, the meter without the extension', () => {
   assert.equal(perfOn('?perf'), true); assert.equal(perfOn('?air=off&perf&x'), true); assert.equal(perfOn('?perfect=1'), false); assert.equal(perfOn(''), false);
   assert.equal(perfLine(null, { draws: 12 }), '[perf] gpu n/a | draws 12');
+  // PERF-FACES / DRAW-SITES: the shadow pass's static/dynamic/blit columns and the draw families ride the same line, and
+  // each is conditional - a counts object without them prints exactly the line it always did.
   assert.equal(perfLine(6.25, { draws: 812, shadows: { cascadesDrawn: 2, sunDraws: 300, casters: 6, facesDrawn: 18, pointDraws: 90, culled: 1204, records: 900 }, air: { emitDraws: 12, glares: 5, shafts: true } }),
-    '[perf] gpu 6.25ms | draws 812 | sun 2c/300d | lanterns 6k/18f/90d | culled 1204 | records 900 | emit 12 | glares 5 | shafts 1');
+    '[perf] gpu 6.25ms | draws 812 | sun 2c/300d | lanterns 6k/18f/90d | culled 1204 | records 900 | faces 0s/0d | blits 0 | cached 0 | emit 12 | glares 5 | shafts 1');
+  assert.equal(perfLine(6.25, { draws: 900, shadows: { facesDrawn: 66, staticFaces: 60, dynFaces: 6, blits: 4, cachedSlots: 5 }, sites: { flat: 500, flatKeys: 420, flatOrigins: 480, mesh: 120, terr: 30, water: 8, screen: 9, char: 12, charRanges: 16 } }),
+    '[perf] gpu 6.25ms | draws 900 | sun 0c/0d | lanterns 0k/66f/0d | culled 0 | records 0 | faces 60s/6d | blits 4 | cached 5 | sites flat 500d/420k/480o | mesh 120 | terr 30 | water 8 | char 12d/16r | screen 9 | other 221',
+    'the families reconcile to `draws`: 900 - (500 + 120 + 30 + 8 + 9 + 12) = 221');
   const { gl } = recordingGl();
   const m = new PerfMeter(gl);
   assert.equal(m.ext, null, 'no extension on the fake');

@@ -1956,7 +1956,14 @@ export class ShadowPass {
         const dynNear = anyDyn ? this._dynamicNear(pos, far, f.isSpectral, selfNear, this._candFor(rank, L, casters, farOf)) : DYN_NONE;   // 0 none, 1 sway alone, 2 a mover, 3 bodies alone
         // AUDIT MWNPC16-18 A2: bodies alone redraw only when one changed - the live layers hold them as they stand
         const bodiesHeld = dynNear === DYN_BODY && this._slotBodySig[k * 2] === this._bodySig[0] && this._slotBodySig[k * 2 + 1] === this._bodySig[1];
-        const dueDyn = dynNear === DYN_SWAY ? (SHADOW_TUNING.steady || (this.frameNo + k) % SHADOW_SWAY_EVERY === 0) : dynNear === DYN_BODY ? !bodiesHeld : due;   // AUDIT REACH: a swaying wood redraws on the sway's own cadence
+        // PERF-SWAY (2026-10-19, the draw-call census): STEADY NO LONGER SHORT-CIRCUITS THE SWAY'S CADENCE. `steady`
+        // meant "a settled slot need not redraw", which is the static cache's own law - but this arm is the DYNAMIC faces,
+        // and a slot whose only dynamic is a leaning flora batch was redrawing all six faces and its blit every frame
+        // under Steady (on by default). The two lamps nearest the eye and the player's own card keep every frame - theirs
+        // is the shadow a player watches move (FLICKER-FIX) - and the near/self arm sits BEHIND the steady flag, so the
+        // steady-OFF schedule is exactly what it was.
+        const swayDue = (SHADOW_TUNING.steady && (near || selfNear)) || (this.frameNo + k) % SHADOW_SWAY_EVERY === 0;
+        const dueDyn = dynNear === DYN_SWAY ? swayDue : dynNear === DYN_BODY ? !bodiesHeld : due;   // AUDIT REACH: a swaying wood redraws on the sway's own cadence
         if (dynNear && (dueDyn || staticStale || !this._slotLiveDyn[k] || selfMoved)) {
           const cand = this._candFor(rank, L, casters, farOf);
           if (cand) this._candidateQuads(rank);   // PERF-SHADOW1 (a no-op when the static faces asked it above)

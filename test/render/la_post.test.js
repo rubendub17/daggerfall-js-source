@@ -153,7 +153,7 @@ function glareScene({ tx = 0, ty = 0, D = 10, hw = 0.25, beam = null, flatOff = 
 function glareRun(vs, o = {}) {
   const { W, H, proj, pi, at } = glareScene(o);
   const f = glslFunctions(vs, {
-    uProj: Array.from(proj), uView: Array.from(lookAt([o.tx ?? 0, o.ty ?? 0, 0], [o.tx ?? 0, o.ty ?? 0, -1], [0, 1, 0])), uCenter: [o.lx ?? 0, 0, -(o.D ?? 10)], uSize: 1,
+    uProj: Array.from(proj), uView: Array.from(lookAt([o.tx ?? 0, o.ty ?? 0, 0], [o.tx ?? 0, o.ty ?? 0, -1], [0, 1, 0])), aCenterSize: [o.lx ?? 0, 0, -(o.D ?? 10), 1], aColor: [1, 1, 1],   // GLARE-INSTANCED: the light and its size are the instance's
     uProjInfo: Array.from(pi), uRect: [0, 0, W, H], uCanvas: [W, H], aCorner: [0.5, 0.5],
     textureLod: (name, uv) => [depth01(at(Math.min(Math.max(Math.floor(uv[0] * W), 0), W - 1), Math.min(Math.max(Math.floor(uv[1] * H), 0), H - 1)), pi), 0, 0, 1],
   });
@@ -268,7 +268,13 @@ test('LA-POST2: the glare is sized by a range HELD per light - a lamp whose rang
   const { ap, calls } = pass();
   const L = new Float32Array([2, 3, -10, 18]);
   const f = { pointLights: L, pointColors: null, carried: null, proj: I, view: I };
-  const sizeNow = () => { calls.length = 0; ap._glares(f, () => {}); return calls.find((c) => c[0] === 'uniform1f' && c[1] === 'uSize')?.[2]; };
+  // GLARE-INSTANCED: the size is read off the UPLOAD - the instance buffer's fourth float - not the staging array, so a
+  // pass that never uploads, or uploads too little, fails here: the same law, one draw a frame
+  const sizeNow = () => {
+    calls.length = 0; ap._glares(f, () => {});
+    const ups = calls.filter((c) => c[0] === 'bufferSubData');
+    return ups.length ? ups[0][3][3] : undefined;
+  };
   const held = [], live = [];
   for (let frame = 0; frame < 600; frame++) {
     anim.tick(1 / 60);
@@ -280,12 +286,15 @@ test('LA-POST2: the glare is sized by a range HELD per light - a lamp whose rang
   assert.ok(spread(held) < 1e-4, `the uploaded size stood still (${spread(held)})`);
   // a range that really falls
   L[3] = 8;
-  assert.equal(sizeNow(), glareSize(8), 'followed at once');
+  assert.ok(Math.abs(sizeNow() - glareSize(8)) < 1e-6, 'followed at once');   // GLARE-INSTANCED: the instance buffer is f32, so the compare has its precision
   // the hold is the light's own, by place: a second light beside it holds its own
   const two = new Float32Array([2, 3, -10, 8, 6, 3, -10, 18]);
   f.pointLights = two;
   calls.length = 0; ap._glares(f, () => {});
-  assert.deepEqual(calls.filter((c) => c[0] === 'uniform1f' && c[1] === 'uSize').map((c) => c[2]), [glareSize(8), glareSize(18)]);
+  const ups = calls.filter((c) => c[0] === 'bufferSubData');
+  assert.equal(calls.filter((c) => c[0] === 'drawArraysInstanced').length, 1, 'one submission for the frame\'s lanterns');
+  assert.equal(ups.length, 2, 'the centre/size and the colour uploads, once a pass');
+  assert.deepEqual([ups[0][3][3], ups[0][3][7]].map((v) => v.toFixed(6)), [glareSize(8), glareSize(18)].map((v) => v.toFixed(6)), 'each light its own entry, in the lights\' order');
   // gone lights are let go: two hundred passes of the second light alone
   f.pointLights = new Float32Array([6, 3, -10, 18]);
   for (let k = 0; k < 200; k++) ap._glares(f, () => {});
@@ -294,7 +303,7 @@ test('LA-POST2: the glare is sized by a range HELD per light - a lamp whose rang
   // the storm's flash and the hand's light are still no lanterns (F11, MAC-T1)
   f.pointLights = new Float32Array([0, 50, 0, 800, 1, 1, 1, 8]); f.carried = new Uint8Array([0, 1]);
   calls.length = 0; ap._glares(f, () => {});
-  assert.equal(calls.filter((c) => c[0] === 'drawArrays').length, 0);
+  assert.equal(calls.filter((c) => c[0] === 'drawArrays' || c[0] === 'drawArraysInstanced').length, 0);   // GLARE-INSTANCED: neither form draws
 });
 
 // ═══ 3. THE BLOOM AND THE SHAFTS IN HALF FLOATS ══════════════════════════════════════════════════════════════════

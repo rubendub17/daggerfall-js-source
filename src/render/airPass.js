@@ -1183,13 +1183,14 @@ void main() {
  *  it (LA-POST2: the collapse is real now - the quad leaves the clip volume). */
 const GLARE_VS = `#version 300 es
 layout(location=0) in vec2 aCorner;
+layout(location=1) in vec4 aCenterSize;   // GLARE-INSTANCED: the light and its full size, one attribute a lantern
+layout(location=2) in vec3 aColor;
 uniform mat4 uProj;
 uniform mat4 uView;
-uniform vec3 uCenter;
-uniform float uSize;
 ${DEPTH_GLSL}
 out vec2 vUV;
 out float vVis;
+out vec3 vColor;
 // EL5: THE OCCLUSION IS IN WORLD UNITS. The depth image is hyperbolic: a
 // constant 0.002 off it hid nothing past twenty units, and a town's lanterns
 // glared through its walls (the first field report).
@@ -1235,14 +1236,14 @@ float flame(vec4 vc, float lantern) {
   return filtered(uv, lantern, false);
 }
 void main() {
-  vec4 vc = uView * vec4(uCenter, 1.0);
+  vec4 vc = uView * vec4(aCenterSize.xyz, 1.0);
   vec4 clip = uProj * vc;
   float vis = 0.0;
   if (clip.w > 0.0) {
     vec3 ndc = clip.xyz / clip.w;
     if (abs(ndc.x) < 1.2 && abs(ndc.y) < 1.2) {
       float lantern = -vc.z;
-      float s = uSize * 0.5;
+      float s = aCenterSize.w * 0.5;
       float sum = 0.0;
       for (int k = 0; k < ${AIR_GLARE_TAPS.length}; k++) sum += flame(vc + vec4(GLARE_TAP[k] * s, 0.0, 0.0), lantern);
       vis = sum / ${glslFloat(AIR_GLARE_TAPS.length)};
@@ -1261,19 +1262,20 @@ void main() {
   }
   vVis = vis;
   vUV = aCorner;
+  vColor = aColor;
   // LA-POST2: a glare with nothing to show leaves the clip volume whole - no fragment of it is shaded
-  gl_Position = vis > 0.0 ? uProj * (vc + vec4(aCorner * uSize, 0.0, 0.0)) : vec4(2.0, 2.0, 2.0, 1.0);
+  gl_Position = vis > 0.0 ? uProj * (vc + vec4(aCorner * aCenterSize.w, 0.0, 0.0)) : vec4(2.0, 2.0, 2.0, 1.0);
 }`;
 const GLARE_FS = `#version 300 es
 precision highp float;
 in vec2 vUV;
 in float vVis;
-uniform vec3 uColor;
+in vec3 vColor;
 out vec4 outColor;
 void main() {
   float r = length(vUV) * 2.0;
   float a = max(0.0, 1.0 - r * r);
-  outColor = vec4(uColor * a * a * vVis, 1.0);
+  outColor = vec4(vColor * a * a * vVis, 1.0);
 }`;
 
 /**
@@ -1292,7 +1294,7 @@ export class AirPass {
       shaft: P(QUAD_VS, SHAFT_FS, ['uDepth', 'uSun', 'uShaftParams', 'uSunColor', 'uProjInfo', 'uRect', 'uCanvas', 'uEye', 'uCloudShadowMap', 'uCloudShadowRect', 'uSunOn', 'uViewRot', 'uCloudSky', 'uCloudSkyOn', 'uLightDir', 'uHaze']),   // VC6c: the cloud in front of the sun; VC7b: the sky map's gaps and the haze
       emitMesh: P(opts.vs.mesh, EMIT_MESH_FS, ['uProj', 'uView', 'uModel', 'uEmissionTex', 'uEmissionColor', 'uDepth', 'uProjInfo', 'uRect', 'uCanvas', 'uBloomSize', 'uRoomsLit']),
       emitBb: P(opts.vs.bb, EMIT_BB_FS, ['uProj', 'uView', 'uRight', 'uUp', 'uOrigin', 'uSize', 'uTex', 'uEmissionTex', 'uFlatWind', 'uSway', 'uWindfallSway', 'uWindfallAxis', 'uDepth', 'uProjInfo', 'uRect', 'uCanvas', 'uBloomSize']),   // WINDFALL1: and the mod's law
-      glare: P(GLARE_VS, GLARE_FS, ['uProj', 'uView', 'uCenter', 'uSize', 'uDepth', 'uColor', 'uProjInfo', 'uRect', 'uCanvas']),
+      glare: P(GLARE_VS, GLARE_FS, ['uProj', 'uView', 'uDepth', 'uProjInfo', 'uRect', 'uCanvas']),   // GLARE-INSTANCED: the light and its colour are attributes now
       // EL4
       lum: P(QUAD_VS, LUM_FS, ['uFrame', 'uPrev', 'uRect', 'uCanvas', 'uVol']),   // AUDIT VOL1: the eye sees the glow
       adapt: P(QUAD_VS, ADAPT_FS, ['uPrev', 'uLum', 'uAdaptParams', 'uAdaptRates']),
@@ -1317,6 +1319,25 @@ export class AirPass {
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5]), gl.STATIC_DRAW);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    // GLARE-INSTANCED (2026-10-19, the draw-call census): the lantern glares were ONE DRAW A LIGHT - forty-odd a frame
+    // in a town. The program, the VAO, the view-projection and the depth block were already the frame's; only `uCenter`,
+    // `uSize` and `uColor` changed per light, so they are two divisor-1 attributes and the whole pass is one
+    // `drawArraysInstanced`. The buffers grow to whatever the frame's light list holds.
+    this.glareCap = Math.max(1, opts.maxLights ?? 48);
+    this.glareCenterSize = new Float32Array(this.glareCap * 4);
+    this.glareColor = new Float32Array(this.glareCap * 3);
+    this.glareCenterBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.glareCenterBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, this.glareCenterSize, gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 0, 0);
+    gl.vertexAttribDivisor(1, 1);
+    this.glareColorBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.glareColorBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, this.glareColor, gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0);
+    gl.vertexAttribDivisor(2, 1);
     gl.bindVertexArray(null);
     this.projInfo = new Float32Array(4);
     this.aoParams = new Float32Array([AIR_AO_RADIUS, AIR_AO_STRENGTH, AIR_AO_BIAS, 0]);
@@ -1962,12 +1983,15 @@ export class AirPass {
     const gl = this.gl, P = this.programs.glare, L = f.pointLights, C = f.pointColors;
     const n = L.length >> 2;
     if (n === 0) return;
+    if (n > this.glareCap) this._glareGrow(n);   // a frame with more lights than the buffers were made for
     gl.useProgram(P.p);
     gl.uniformMatrix4fv(P.uProj, false, f.proj);
     gl.uniformMatrix4fv(P.uView, false, f.view);
     depthOn(P);   // EL5/EL6: the depth's reconstruction, off the frame's own
     gl.bindVertexArray(this.glareVao);
     const hold = this._glareHold, now = ++this._glareFrame;
+    const cs = this.glareCenterSize, cl = this.glareColor;
+    let m = 0;
     for (let i = 0; i < n; i++) {
       const range = L[i * 4 + 3];
       if (!(range > 0) || range > AIR_GLARE_MAX_RANGE) continue;   // AUDIT-EL F11: the lightning flash (range 500..1000 over the player) is no lantern
@@ -1978,15 +2002,38 @@ export class AirPass {
       let h = hold.get(key);
       if (h) { h.range = heldGlareRange(h.range, range); h.seen = now; }
       else hold.set(key, h = { x, y, z, range, seen: now });
-      gl.uniform3f(P.uCenter, x, y, z);
-      gl.uniform1f(P.uSize, glareSize(h.range));
-      gl.uniform3f(P.uColor, C ? C[i * 3] : 1, C ? C[i * 3 + 1] : 1, C ? C[i * 3 + 2] : 1);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      this.stats.glares++;
+      // the four uniforms this light alone set, in its instance's slot instead
+      cs[m * 4] = x; cs[m * 4 + 1] = y; cs[m * 4 + 2] = z; cs[m * 4 + 3] = glareSize(h.range);
+      cl[m * 3] = C ? C[i * 3] : 1; cl[m * 3 + 1] = C ? C[i * 3 + 1] : 1; cl[m * 3 + 2] = C ? C[i * 3 + 2] : 1;
+      m++;
+    }
+    if (m) {
+      // GLARE-INSTANCED: one submission for every lantern in the frame. The quads land in the bloom target, which is
+      // additive and has no depth test, so the same quads in the same order composite to the same image.
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.glareCenterBuf);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, cs, 0, m * 4);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.glareColorBuf);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, cl, 0, m * 3);
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, m);
+      this.stats.glares += m;
     }
     // LA-POST2: a place not lit for two seconds' worth of glare passes lets its held range go (a light that moves
     // leaves one behind a pass)
     if ((now & 63) === 0) for (const [k, v] of hold) if (now - v.seen > 120) hold.delete(k);
+  }
+
+  /** GLARE-INSTANCED: the instance buffers, grown to a frame's light list (rare - the classic lane caps at sixteen). */
+  _glareGrow(n) {
+    const gl = this.gl, cap = Math.max(n, this.glareCap * 2);
+    this.glareCap = cap;
+    this.glareCenterSize = new Float32Array(cap * 4);
+    this.glareColor = new Float32Array(cap * 3);
+    gl.bindVertexArray(this.glareVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.glareCenterBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, this.glareCenterSize, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.glareColorBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, this.glareColor, gl.DYNAMIC_DRAW);
+    gl.bindVertexArray(null);
   }
 
 

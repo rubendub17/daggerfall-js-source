@@ -370,7 +370,9 @@ test('MWNPC1h drawCharacter: the palette sampler always reads a complete texture
   assert.ok(once.includes("gl.uniform1i(gl.getUniformLocation(program, 'uSkinPalette'), SKIN_PALETTE_UNIT);"), 'the palette unit, set at link');
   assert.ok(once.includes("gl.uniform1f(gl.getUniformLocation(program, 'uFrontCW'), 1);") && src.includes('    gl.frontFace(gl.CW);'), 'and the front face, CW as the constructor sets it');
   assert.ok(once.includes('this._skinIdentityTex();'), 'and the identity on the unit');
-  assert.ok(draw.includes("if (skin) gl.uniform1f(c.skinFlip, r.piece && r.piece.mirrored ? -1 : 1);"), 'the flip, per piece');
+  // PIN MOVED (2026-10-19, DRAW-SITES): the flip is a RUN's now, not a range's - drawCharacter merges contiguous ranges
+  // that agree on texture, cutout and flip, so the uniform is sent once per run from the run's own `runFlip`.
+  assert.ok(draw.includes('const flip = r.piece && r.piece.mirrored ? -1 : 1;') && draw.includes('if (skin) gl.uniform1f(c.skinFlip, runFlip);'), 'the flip, per piece, sent once a run');
   const after = draw.slice(draw.indexOf("if (skin) {\n      // MWNPC1: the identity back on the unit"));
   assert.ok(after.includes('gl.bindTexture(gl.TEXTURE_2D, this._skinIdentityTex());') && after.includes('gl.uniform1f(c.skin, 0);'), 'the identity back, and the skin off, after a skinned draw');
 });

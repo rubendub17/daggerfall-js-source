@@ -83,8 +83,8 @@
   {
     "name": "LA-POST2-quad-never-collapsed",
     "file": "src/render/airPass.js",
-    "old": "  gl_Position = vis > 0.0 ? uProj * (vc + vec4(aCorner * uSize, 0.0, 0.0)) : vec4(2.0, 2.0, 2.0, 1.0);",
-    "new": "  gl_Position = uProj * (vc + vec4(aCorner * uSize, 0.0, 0.0));",
+    "old": "  gl_Position = vis > 0.0 ? uProj * (vc + vec4(aCorner * aCenterSize.w, 0.0, 0.0)) : vec4(2.0, 2.0, 2.0, 1.0);",
+    "new": "  gl_Position = uProj * (vc + vec4(aCorner * aCenterSize.w, 0.0, 0.0));",
     "tests": [
       "test/render/la_post.test.js"
     ]
@@ -92,8 +92,8 @@
   {
     "name": "LA-POST2-size-follows-the-flicker",
     "file": "src/render/airPass.js",
-    "old": "      gl.uniform1f(P.uSize, glareSize(h.range));",
-    "new": "      gl.uniform1f(P.uSize, glareSize(range));",
+    "old": "      cs[m * 4] = x; cs[m * 4 + 1] = y; cs[m * 4 + 2] = z; cs[m * 4 + 3] = glareSize(h.range);",
+    "new": "      cs[m * 4] = x; cs[m * 4 + 1] = y; cs[m * 4 + 2] = z; cs[m * 4 + 3] = glareSize(range);",
     "tests": [
       "test/render/la_post.test.js"
     ]

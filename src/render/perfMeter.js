@@ -64,7 +64,21 @@ export function perfLine(gpuMs, counts) {
   const c = counts || {};
   const parts = [gpu, `draws ${c.draws ?? 0}`];
   if (c.shadows) parts.push(`sun ${c.shadows.cascadesDrawn ?? 0}c/${c.shadows.sunDraws ?? 0}d`, `lanterns ${c.shadows.casters ?? 0}k/${c.shadows.facesDrawn ?? 0}f/${c.shadows.pointDraws ?? 0}d`, `culled ${c.shadows.culled ?? 0}`, `records ${c.shadows.records ?? 0}`);
+  // PERF-FACES (2026-10-19): the shadow pass keeps FOURTEEN per-frame counts and this line printed seven, so "66 faces"
+  // could not say whether they were a cache rebuilding or a caster that moved - the two need different fixes. Four more
+  // columns answer it: static faces (a slot's cache rebuilt), dynamic (the moving casters on top), the blits that copy
+  // the cache into the live layers, and the slots served whole from the cache.
+  if (c.shadows) parts.push(`faces ${c.shadows.staticFaces ?? 0}s/${c.shadows.dynFaces ?? 0}d`, `blits ${c.shadows.blits ?? 0}`, `cached ${c.shadows.cachedSlots ?? 0}`);
   if (c.air) parts.push(`emit ${c.air.emitDraws ?? 0}`, `glares ${c.air.glares ?? 0}`, `shafts ${c.air.shafts ? 1 : 0}`);
+  // DRAW-SITES (2026-10-19): where the renderer's own draws went, so `draws 1226` stops being one number. `other` is
+  // everything the named families do not cover (decals, sprites, snow, panes, the glow, particles). It is NOT clamped:
+  // a family that double-counts must print a negative `other` and be seen, which a floor at zero would hide.
+  if (c.sites) {
+    const s = c.sites;
+    const named = (s.flat | 0) + (s.mesh | 0) + (s.terr | 0) + (s.water | 0) + (s.screen | 0) + (s.char | 0);
+    const other = (c.draws | 0) - named;
+    parts.push(`sites flat ${s.flat | 0}d/${s.flatKeys | 0}k/${s.flatOrigins | 0}o`, `mesh ${s.mesh | 0}`, `terr ${s.terr | 0}`, `water ${s.water | 0}`, `char ${s.char | 0}d/${s.charRanges | 0}r`, `screen ${s.screen | 0}`, `other ${other}`);
+  }
   return `[perf] ${parts.join(' | ')}`;
 }
 

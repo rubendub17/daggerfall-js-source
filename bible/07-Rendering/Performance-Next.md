@@ -217,9 +217,11 @@ container's CPU, or node/Chromium micro-benchmarks over the real modules where n
 **The GPU (not measurable on SwiftShader - for a player's card).**
 8. **The cloud march** - 21-29% of SwiftShader's outdoor frame in every weather, and the Render Scale does not touch it
    (PERF-UPD). Every lever changes the sky's look: Mac's.
-9. **Steady shadows' draws** - every lantern with a mover or a sway by it redraws its six dynamic faces every frame (42
-   face passes a frame at Knightstale by day). PERF-SHADOW1 took their CPU walk; the GPU's passes are FLICKER-FIX's
-   trade for stability, and the cadence is Mac's.
+9. **Steady shadows' draws** - every lantern with a mover by it redraws its six dynamic faces every frame (42 face
+   passes a frame at Knightstale by day). PERF-SHADOW1 took their CPU walk; the GPU's passes are FLICKER-FIX's trade
+   for stability, and the cadence is Mac's. PERF-SWAY (2026-10-19, the draw-call census) narrowed it: a lantern whose
+   only dynamic is a SWAYING batch keeps the sway's own four-frame cadence even under Steady, and only the two lamps
+   nearest the eye and the player's own card redraw every frame - a MOVER still does, every frame.
 10. **The flats' draw count** - ~1,090 draws a frame in a town, one a (archive, record) a map pixel. A texture array
    over an archive's records, or centres merged across pixels: a renderer project, nothing a player sees.
 11. **An automatic quality governor** - the Render Scale chosen from the measured frame. It changes the picture as the

@@ -24,6 +24,9 @@ import { frameTarget, setFrameTarget } from './renderTarget.js';   // RW1: the v
 import { CLIP_SENTINEL } from '../world/terrain/terrainSurface.js';   // FAR-CLIP1: the byte the terrain's clip variant discards - the TileMap format's module, already in this file's closure (waterCorners.js)
 /** AUDIT TECH-FX: the screen offset before any is set - one, frozen (Renderer `screenOffset`). */
 const NO_SCREEN_OFFSET = Object.freeze([0, 0]);
+/** DRAW-SITES: every family a draw site increments, seeded by name in beginFrame - the one list the reset and the line
+ *  both speak (a key missing here reads NaN through `| 0`, a silent zero in the census). */
+const SITE_KEYS = Object.freeze(['flat', 'flatKeys', 'flatOrigins', 'mesh', 'terr', 'water', 'screen', 'char', 'charRanges', 'snow']);
 
 const VS = `#version 300 es
 layout(location=0) in vec3 aPos;
@@ -3134,7 +3137,7 @@ export class Renderer {
     this._perfOpen = false;
     this._perf.end();
     this._perf.stop();   // VC6d: the frame's last span
-    const line = this._perf.frame({ draws: this.stats.draws, shadows: this._shadows ? { ...this._shadows.stats, casters: this._shadows.casters } : null, air: this._air ? { ...this._air.stats } : null });
+    const line = this._perf.frame({ draws: this.stats.draws, sites: this.stats.sites, shadows: this._shadows ? { ...this._shadows.stats, casters: this._shadows.casters } : null, air: this._air ? { ...this._air.stats } : null });   // DRAW-SITES: the family split rides the same line
     if (line) console.info(line);
   }
 
@@ -3711,20 +3714,46 @@ export class Renderer {
     const glow = !!(mesh.weaponGlow || mesh.offWeaponGlow) && this._spriteDepth > 0 && this._studioDepth === 0 && this._glowVpH > 0 && !!mesh.ranges;
     if (glow) this._drawWeaponGlows(mesh, modelMatrix, skin, false);
     if (mesh.ranges && mesh.ranges.length) {
+      // A RUN OF RANGES IS ONE DRAW (2026-10-19, the draw-call census): the ranges are contiguous and ascending in one
+      // buffer by construction (fpArm.js `first += count`, mwGpuSkin.js's corner check, horseModel.js), and everything
+      // this loop varies between them - the texture, the cutout, the skin flip - is a uniform or a bind, not a program.
+      // So adjacent ranges that agree on all three are drawn as one `drawArrays`, exactly as the shadow replay already
+      // merges the same array (shadowPass.js `rg.first === runEnd`). A hidden range OWNS its vertices, so it breaks the
+      // run rather than being skipped through: the shadow's law, which keeps a sheathed weapon from being drawn from its
+      // neighbour's stream.
+      let runFirst = -1, runCount = 0, runEnd = -1, runTex = null, runHasTex = 0, runCut = -1, runFlip = 1;
+      const flushRun = () => {
+        if (runFirst < 0) return;
+        if (skin) gl.uniform1f(c.skinFlip, runFlip);   // MWNPC1: packFpArm's flip, per piece
+        gl.uniform1f(c.useTex, runHasTex);   // `r.tex ? 1 : 0`, NOT "is there a texture bound": the black tex stands in for none, and a range with none is the lane's colour by the shader's `uUseTex` test
+        gl.uniform1f(c.alphaCut, runCut);
+        gl.drawArrays(gl.TRIANGLES, runFirst, runCount);
+        this.stats.texBinds++; this.stats.draws++;
+        (this.stats.sites ??= {}).char++;
+        runFirst = -1; runCount = 0;
+      };
       for (const r of mesh.ranges) {
         // MW-D12: a HIDDEN range still owns its vertices and its texture
         // - Morrowind's showWeapons hides the node, it does not delete it
         // (rule 57), and a sheathed weapon has to come back without a
         // repack.
-        if (r.hidden) continue;
-        if (skin) gl.uniform1f(c.skinFlip, r.piece && r.piece.mirrored ? -1 : 1);   // MWNPC1: packFpArm's flip, per piece
-        gl.uniform1f(c.useTex, r.tex ? 1 : 0);
-        gl.uniform1f(c.alphaCut, r.alphaCut || 0);
-        gl.bindTexture(gl.TEXTURE_2D, r.tex || this._blackTex);
-        this._tex0Bound = null;   // PERF-TEX3: this path owns unit 0 - the shadow may not speak for it
-        gl.drawArrays(gl.TRIANGLES, r.first, r.count);
-        this.stats.texBinds++; this.stats.draws++;
+        if (r.hidden) { flushRun(); continue; }
+        const flip = r.piece && r.piece.mirrored ? -1 : 1;
+        const cut = r.alphaCut || 0;
+        const tex = r.tex || this._blackTex;
+        const hasTex = r.tex ? 1 : 0;
+        (this.stats.sites ??= {}).charRanges++;
+        if (runFirst >= 0 && r.first === runEnd && tex === runTex && hasTex === runHasTex && cut === runCut && (!skin || flip === runFlip)) {
+          runCount += r.count;   // the same state, the next vertices: one draw covers both
+        } else {
+          flushRun();
+          runFirst = r.first; runCount = r.count; runTex = tex; runHasTex = hasTex; runCut = cut; runFlip = flip;
+          gl.bindTexture(gl.TEXTURE_2D, tex);
+          this._tex0Bound = null;   // PERF-TEX3: this path owns unit 0 - the shadow may not speak for it
+        }
+        runEnd = r.first + r.count;
       }
+      flushRun();
     } else {
       gl.uniform1f(c.useTex, 0);
       gl.uniform1f(c.alphaCut, 0);
@@ -3732,6 +3761,7 @@ export class Renderer {
       this._tex0Bound = null;   // PERF-TEX3: this path owns unit 0 - the shadow may not speak for it
       gl.drawArrays(gl.TRIANGLES, 0, mesh.count);
       this.stats.texBinds++; this.stats.draws++;
+      (this.stats.sites ??= {}).char++;   // DRAW-SITES: a body drawn without ranges is still a body's draw
     }
     if (glow) this._drawWeaponGlows(mesh, modelMatrix, skin, true);
     gl.bindTexture(gl.TEXTURE_2D, null);
@@ -4813,6 +4843,7 @@ void main() {
     if (blend) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); }
     gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
     this.stats.draws++;
+    (this.stats.sites ??= {}).screen++;
     if (blend) gl.disable(gl.BLEND);
     // PERF-2D: the run stays open - _close2D hands the baseline back at
     // the head of whatever needs it next.
@@ -4865,6 +4896,7 @@ void main() {
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
     this.stats.draws++;
+    (this.stats.sites ??= {}).screen++;
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.disable(gl.BLEND);
   }
@@ -4913,6 +4945,7 @@ void main() {
       this._bindTex0(tex);
       gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
       this.stats.draws++;
+    (this.stats.sites ??= {}).screen++;
     } finally {
       gl.bindFramebuffer(gl.FRAMEBUFFER, this._frameFbo ?? null);   // EL4: the frame, or the canvas
       this._restoreWorldViewport();
@@ -5075,6 +5108,7 @@ void main() {
     this._bindTex0(tex); gl.uniform1i(this._screenQuadRun.tex, 0);   // PERF-TEX3
     gl.drawElementsInstanced(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0, n);
     this.stats.draws++;
+    (this.stats.sites ??= {}).screen++;
   }
 
   /** PERF-WARM: build the instanced screen-quad program and its two
@@ -5167,6 +5201,7 @@ void main() {
     this._open2D(this._overlayVAO);   // PERF-2D
     gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
     this.stats.texBinds++; this.stats.draws++;
+    (this.stats.sites ??= {}).screen++;
     if (strip) gl.viewport(0, 0, this.canvas.width, this.canvas.height);   // the 2D pass's whole canvas back
   }
 
@@ -5537,6 +5572,15 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     this._close2D();   // PERF-2D: the baseline back, before anything that needs it
     const s = this.stats;
     s.draws = 0; s.programBinds = 0; s.vaoBinds = 0; s.texBinds = 0; s.bbCulled = 0; s.shadowDraws = 0;   // PERF-CROWD2; PASS-COUNT
+    // DRAW-SITES (2026-10-19): WHERE the frame's draws went, so `draws 1226` stops being one number. `flat` is the
+    // billboard pass's, with the texture binds and the origin uploads beside it (a run of ONE is a draw no multi-draw
+    // could merge); `mesh` a bundle's sub-mesh, `terr` a ground pixel, `water` a sea row or a dungeon quad, `screen` a
+    // screen-space pass, and `other` is the rest (decals, sprites, snow, panes, glow, particles) - printed as draws minus
+    // the sum, so the five always reconcile to `draws`. EVERY key a draw site increments is seeded here, by name: a stub
+    // renderer's `sites` (a test's, or a lane driven without beginFrame) would otherwise hold `undefined` and the first
+    // `x++` would make it NaN, which `| 0` then prints as a silent zero.
+    s.sites ??= {};
+    for (const k of SITE_KEYS) s.sites[k] = 0;
     // VC4: the cloud shadow deck is a FRAME's, not the renderer's - a host
     // that wants one sets it after this (the exterior hosts do, per
     // pixel); an interior or a dungeon, which never does, gets none, and
@@ -7507,6 +7551,7 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     }
     gl.drawElements(gl.TRIANGLES, surface.indexCount, gl.UNSIGNED_INT, 0);
     this.stats.draws++;
+    (this.stats.sites ??= {}).snow++;
     if (P) return;   // the pass hands it back at its end
     gl.disable(gl.POLYGON_OFFSET_FILL);
     this._bindVao(null);
@@ -7668,6 +7713,7 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     this._bindVao(surface.vao);
     gl.drawElements(gl.TRIANGLES, surface.indexCount, gl.UNSIGNED_INT, 0);
     this.stats.draws++;
+    (this.stats.sites ??= {}).terr++;
     this._bindVao(null);
   }
 
@@ -7701,6 +7747,7 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       gl.uniform4f(this.waterURect, q.x, q.z, q.size, q.y);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       this.stats.draws++;
+      (this.stats.sites ??= {}).water++;
     }
     this._bindVao(null);
     gl.depthMask(true);
@@ -7894,6 +7941,7 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       this._bindVao(surface.vao);
       gl.drawElements(gl.TRIANGLES, surface.indexCount, gl.UNSIGNED_INT, 0);
       this.stats.draws++;
+      (this.stats.sites ??= {}).water++;
     }
     this._activeTexture(gl.TEXTURE0);
     this._bindVao(null);
@@ -8229,6 +8277,7 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       // one record never share a bind (and a pass with no such flat never rebinds for it)
       if (!!b.emissionOff !== lastDark) { lastDark = !!b.emissionOff; lastKey = null; }
       if (key !== lastKey) {
+        (this.stats.sites ??= {}).flatKeys++;   // DRAW-SITES: a texture bind - as many of these as there are draws means no run to merge
         this._activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, tex);
         this._activeTexture(gl.TEXTURE1);
@@ -8241,7 +8290,7 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       const w = b.size.w, h = b.size.h;
       if (w !== lastW || h !== lastH) { gl.uniform2f(this.bbUSize, w, h); lastW = w; lastH = h; }   // PERF-EXT11
       const o = b.origin || ZERO_ORIGIN;
-      if (o[0] !== lastOx || o[1] !== lastOy || o[2] !== lastOz) { gl.uniform3f(this.bbUOrigin, o[0], o[1], o[2]); lastOx = o[0]; lastOy = o[1]; lastOz = o[2]; }   // PERF-EXT11
+      if (o[0] !== lastOx || o[1] !== lastOy || o[2] !== lastOz) { gl.uniform3f(this.bbUOrigin, o[0], o[1], o[2]); lastOx = o[0]; lastOy = o[1]; lastOz = o[2]; (this.stats.sites ??= {}).flatOrigins++; }   // PERF-EXT11   // DRAW-SITES: an origin upload is state a multi-draw could not share
       const sw = swayShare(b, wfLaw);   // WIND3: the batch's share of the lean, uploaded when it changes between batches; WINDFALL1: its mask under the mod's law
       if (sw !== lastSway) { gl.uniform1f(this.bbUSway, sw); lastSway = sw; }
       const tp = b.tip;   // PROF4: a felled tree's fall ([x, z, angle]); every other batch stands
@@ -8268,6 +8317,7 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       this._bindVao(b.vao);
       gl.drawElements(gl.TRIANGLES, b.indexCount, gl.UNSIGNED_INT, b._ibOff | 0);   // PERF-ARENA: a still batch's range of its arena's indices
       this.stats.draws++;
+      (this.stats.sites ??= {}).flat++;
     };
     gl.uniform1i(this.bbUSpectral, 0);
     gl.uniform4f(this.bbUConceal, 0, 0, 0, 0);   // ECV1: plain unless a batch says otherwise
@@ -8550,9 +8600,11 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
         const range = wireMesh.ranges[smi];
         gl.drawElements(gl.LINES, range.count, gl.UNSIGNED_INT, range.start * 4);
         this.stats.draws++;   // F50: every gl.draw* site carries its own count
+        (this.stats.sites ??= {}).mesh++;
       } else {
         gl.drawElements(gl.TRIANGLES, sm.primitiveCount * 3, gl.UNSIGNED_INT, sm.startIndex * 4);
         this.stats.draws++;
+        (this.stats.sites ??= {}).mesh++;
       }
     }
     if (this._rwModeUp > 0 || this._rwCutUp > 0) this._rwRest();   // RW1: no other draw on the mesh program inherits a window mode or a cutout

@@ -119,7 +119,7 @@
   {
     "name": "sway-on-the-movers-cadence",
     "file": "src/render/shadowPass.js",
-    "old": "        const dueDyn = dynNear === DYN_SWAY ? (SHADOW_TUNING.steady || (this.frameNo + k) % SHADOW_SWAY_EVERY === 0) : dynNear === DYN_BODY ? !bodiesHeld : due;",
+    "old": "        const swayDue = (SHADOW_TUNING.steady && (near || selfNear)) || (this.frameNo + k) % SHADOW_SWAY_EVERY === 0;\n        const dueDyn = dynNear === DYN_SWAY ? swayDue : dynNear === DYN_BODY ? !bodiesHeld : due;   // AUDIT REACH: a swaying wood redraws on the sway's own cadence",
     "new": "        const dueDyn = dynNear === DYN_BODY ? !bodiesHeld : due;",
     "tests": [
       "test/render/shadowreach.test.js"
