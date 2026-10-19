@@ -1,0 +1,347 @@
+# THE BENCHMARK — a plan (BENCH1)
+
+*A plan for review, started. Every path and seam named below was read in the working tree
+(`f4bcdcfc30`) before it was written; the modules listed under "What has landed" at the end
+are built and green, and nothing else is.*
+
+## What is being built
+
+One unattended run of the **real game** — the real renderer, the real streamer, the
+real motor, the real AI — through the kinds of play a player actually pays for, reporting
+numbers that can be compared across machines and across versions:
+
+- a character **running through the busiest city** on the map, in god mode, so it cannot die mid-run;
+- **dungeons** walked and fought in;
+- **combat** — the engine's own foes swinging at the player while the player swings back.
+
+Offline by design: no relay, no account, no upload. The only thing a person needs is the
+same ARENA2 folder offline play already needs, and the only thing they get is a file on
+their own machine.
+
+Two doors, one law:
+
+| door | who it is for | what it does |
+|---|---|---|
+| `?world&bench&…` | **anyone** — a player in their browser, or link | runs the legs in their own game, shows the result card, offers a copy/download |
+| `node tools/benchmark.mjs` | a developer, and CI | the same run headless or headed, optionally with the profiler, writing JSON + Markdown |
+
+The in-game door is the product ("anyone can test and run"); the CLI is the same run with
+a recorder attached, so there is never two definitions of what the benchmark is
+(`Home.md`: ONE DFU MEMBER, ONE EXPORT — one exports, the other imports).
+
+## Why it is needed, in one number
+
+The report already in the tree (`cpu-report.md`, 2026-10-19) reads **11 fps** and then
+splits it: **GPU 100.86 ms a frame against 21.46 ms of the game's own JS**. A benchmark
+that returned "11 fps" would send the next reader into `src/` to optimise a fifth of the
+frame. So the result is never one number: frame time, its GPU half (`?perf`,
+`src/render/perfMeter.js`) and its JS half (`script`, `src/systems/frameClock.js`) travel
+together, leg by leg.
+
+## The instruments — all existing, each defined once
+
+| measure | today's owner | how the benchmark takes it |
+|---|---|---|
+| frames a second, mean/worst, script ms, draws/binds/view/shadow | `src/ui/fpsCounter.js` (`window.__fpsStats()`) | read it as one cross-check; do **not** re-derive it |
+| per-frame stamps → p50/p95/p99 and the 1 % low | `fpsStats(stamps)` — already exported, pure | the benchmark's own recorder keeps the leg's stamps and calls **the same** pure function/percentiles |
+| GPU a frame, and the pass it went to | `src/render/perfMeter.js` — `?perf`, `?perf=zones`, `meterFor(gl)` | the meter's own numbers; the `[perf]` console line as the fallback the profiler already parses |
+| CPU profile, allocation profile, per-function self time | `tools/cpuReport.mjs` | **the profiler itself**, invoked by the CLI (`--profile`), not a second sampler |
+| the scene's census (people, foes, draws, dpr, scale, GPU name, build) | `__fpsStats()`, `__people()`, `__foes()`, `renderer.frameInfo` | recorded beside every leg, so two runs can be shown to have measured the same scene |
+
+`tools/cpuReport.mjs` today is a script, not a library: importing it runs it. Its pure
+half — `aggregate`, `aggregateAlloc`, `parsePerf`, `framePlace` — moves to
+`tools/lib/cpuProfile.mjs`, and `cpuReport.mjs` imports it. That is a move, not a rewrite:
+`npm run cpu` must behave identically, byte for byte, on the same page.
+
+## The legs
+
+Every leg is the same pinned scene on every machine and every run. The pins are the
+world host's own URL doors, all read out of `src/scenes/world.js`:
+
+```
+region=Daggerfall&loc=Daggerfall      the capital — the densest place offline
+&tod=<fixed>                          parseTimeOfDay
+&weather=sunny&wseed=<fixed>          weatherSim, pinned so no leg measures rain by luck
+&season=<fixed>
+&class=<fixed>                        the headless-chargen skip (also what keeps a probe
+                                      from typing into the character wizard — T2)
+&bench=<legs>                         the door this plan adds; implies the world host
+```
+
+| leg | what runs | why it is in the score |
+|---|---|---|
+| **B1 the street run** | the player at a run along a recorded track through Daggerfall's streets: the real motor and collider, the town's own crowd, watch, lights, encounters | the everyday case, and the one players report |
+| **B2 the crowd** | the same spot, standing and turning: every townsfolk in frame, the flats, the lanterns | the "busy city" number on its own, without the walk |
+| **B3 the dungeon** | a dungeon's rooms walked: torches, water, the dungeon collider, its foes | the other half of play, and the one the field reports pair with the first ("fine in the interior") |
+| **B4a the fight, blade** | N of the dungeon's own foes engaged, the player swinging the class kit's own blade on a fixed cadence, blows landing both ways, god mode withholding the damage | combat cost is the one nobody can read from a static scene |
+| **B4b the fight, bow** | the same ring of foes, a Long Bow drawn and loosed on the same cadence: the draw, the arrow's flight, the hit | the ranged system is its own cost — the rig, the missile, the arrow's own draws |
+| **B4c the fight, spell** | the same ring again, a readied missile spell cast on the same cadence: the cast frame, the flier, its light and its blast | magic is its own cost again — the cast, the missile pool, the spell effects' lights |
+| **B5 the stream** | a map journey from one pixel to another, measured from the click to `__streamIdle()` — the loading the profiler deliberately excludes | players feel this one most, so it is measured, and reported separately from B1–B4 |
+
+An interior (tavern, shop) is an optional **B6** — worth having, not worth blocking on.
+
+### The three combat systems, and why all three
+
+A benchmark that fights with one weapon measures one system. The port has three ways to
+hurt something and they cost the frame in different places, so the fight leg is **three
+sub-legs on the same foes, the same ring and the same cadence** — only the weapon changes:
+
+| sub-leg | what the character holds | how it is armed | what it puts on the frame |
+|---|---|---|---|
+| **B4a blade** | the class kit's own blade | nothing to do — `?class=` already kit it | the weapon rig's swing, the hit resolution, the hit effects |
+| **B4b bow** | a Long Bow and a full quiver | `testGearRows()`'s archery row through `createWeapon`/`addItem`/`equipItem` — the Test Room's own producers | the draw and the aim, the arrow entity, its flight and its hit |
+| **B4c spell** | a readied missile spell | `addTestMissileSpells(playerEntity, spellsByIndex)` then `magic.setReadied(sp)` | the cast frame, the missile pool, the flier's light and blast |
+
+**The press is the player's, not the benchmark's.** All three are driven by the *same* held
+swing key, because that is the ladder the game already runs on a press:
+`magic.interceptAttack(true)` first ("an armed cast eats the click"), and otherwise
+`weaponRig.attackInput(dx, dy, held)`. So the bot learns nothing about weapons: it holds
+SwingWeapon, and the game decides which system answers. That is the whole point — the
+benchmark measures the systems as they are wired, not as a harness wishes they were.
+
+**Nothing is minted twice.** The bow, the quiver and the missile spells come from
+`src/systems/testRoom.js` (`testGearRows`, `addTestMissileSpells`), which is already the one
+home for "a prebuilt character with real equipment through the real equip table"
+(`Home.md`: ONE DFU MEMBER, ONE EXPORT — one exports, the other imports). The combat sub-legs
+add no item table of their own.
+
+God mode matters most here: the foes still swing, still close the distance and still land
+their blows — only the subtraction is withheld. A fight leg without it would end the run.
+
+
+God mode is the engine's own switch: `setStaffPowers({ god: true })`
+(`src/characters/playerEntity.js`), the same line `/god` writes, read at the one damage
+door (`hurtPlayer` → `playerDamageWithheld`). It is asserted at every leg start and the
+run **fails** if the player's health moves.
+
+## The honesty rules (this is most of the design)
+
+1. **One URL per run, recorded in the result.** Place, time, weather, seed, season, class,
+   and the settings fingerprint. A number without its scene is not a measurement.
+2. **The benchmark forces its own quality preset and records it** (render scale, shadows,
+   grass, trees, crowd, cap/vsync), then restores the player's own settings. `&bench=as-is`
+   measures their settings instead — also recorded, never mixed into a stored baseline.
+3. **N repetitions, median and spread.** The project's own discipline: "a run's own spread
+   is about ±0.4 ms" (`07-Rendering/Performance-Updates.md`). The browser door runs once
+   and says so; the CLI defaults to three and prints the spread.
+4. **Headless is labelled.** A SwiftShader run is a relative number — `perfProbe.mjs`
+   already labels it, and a published score refuses it.
+5. **God mode is stated, not hidden.** The veto sits *before* the shield pool and the
+   damage modifiers, so the AI, the animations and the swings are unchanged; what is
+   skipped is the subtraction and its feedback (the hurt flash, the blood). The report
+   says exactly that.
+6. **Falls, the void, drowning and lethal exhaustion are not blows** — they are
+   `SetHealth(0)` doors the veto does not touch. The tracks avoid them; if health moves
+   the leg fails and names why, rather than healing silently into a different game.
+7. **A run that cannot fail is not a probe** (`test/tooling/probehygiene.test.js` T3). No
+   frames, a page error, a dead player, a census below its floor (fewer townsfolk / foes
+   than the leg promises), or a leg the machine could not reach ⇒ named failure, non-zero
+   exit from the CLI, a red card in the browser.
+8. **Nothing leaves the machine.** No upload path exists in the code at all. A benchmark
+   that phoned home would be a privacy hole in a project that keeps a `privacy/` page.
+
+## The score
+
+Per leg, printed as a table and exported as JSON:
+
+```
+fps mean · 1% low (1000 / p99 frame) · p50/p95/p99 frame ms · worst
+script ms mean and 1% worst · GPU ms mean (from ?perf) · draws · binds
+census: people, foes, lights · world/canvas, dpr, scale · GPU name · build
+```
+
+The headline is a **harmonic mean of the per-leg 1 % lows** — "the frame rate of the
+worst frames", which is what a player feels — with a letter band beside it. The table is
+always shown with it: a scalar invites optimising the scalar, and the whole point of the
+instrument is to say *which half* of the frame the milliseconds are in.
+
+## Where the code goes — the hosts do not grow
+
+`01-Overview/Host-Split.md` and `Home.md` are explicit: new behaviour is a module the
+host wires (`src/scenes/fishHost.js` is the shape), never code inside `bootWorld`. So:
+
+| file | what it owns |
+|---|---|
+| `src/scenes/benchHost.js` | `createBenchHost({ …deps })` — the legs in order, the transitions, the census, the god switch, the overlay's data, `window.__bench`, teardown. Wired by `bootWorld` with **one line** (a create and a tick), as every sibling host is. |
+| `src/systems/bench/law.js` | the legs' definitions, the pinned URL, the census floors, the score maths, the grade bands. Pure, injectable, tested. |
+| `src/systems/bench/recorder.js` | per-frame stamps → percentiles; `summarise(stamps, legs)` pure. |
+| `src/systems/bench/track.js` | the recorded tracks and the **steerer** that turns a track into held keys and a look heading. Pure; the motor is the game's. |
+| `src/systems/bench/bot.js` | the synthetic input source: `KeyboardEvent`s carrying the registry's own codes — the idiom `src/ui/gamepadInput.js` already uses ("a button's edge is a synthetic KeyboardEvent whose code is the Unity name"), so no host learns a second vocabulary, and everything it presses it releases on teardown (`ui/touch/touch.js`'s `up()` guard). |
+| `src/ui/benchOverlay.js` | the leg's name, progress, live numbers, the result card with Copy / Download. Skin-aware like every other overlay. |
+| `tools/benchmark.mjs` | the CLI: builds the URL, opens it, waits for `window.__bench`, collects the result, `--reps`, `--profile`, `--zones`, `--out`, `--headed`. |
+| `tools/benchTracks.mjs` | **the track author**: boots the city, reads the collider and `__doors()`, records/solves a walk loop, and writes the track data — plus a screenshot strip for a human to reject a track that walks through a wall. |
+| `tools/lib/cpuProfile.mjs` | the profiler's pure half, extracted (see above). |
+
+The bench needs the world host's own doors (settle, mode, feet, enter/exit a dungeon).
+They are handed in as deps — the same list a sibling host gets — not reached for through
+`window.__*`, which is the shot gate's surface and not a contract.
+
+## Slices, in order
+
+Each one ships, is verifiable on its own, and none of them leaves the tree red.
+
+- **S1 — the law, the recorder, the card.** Score maths, percentiles, the overlay and its
+  result card, the pure tests. Driven by `&bench=dry`, a synthetic frame source: proves the
+  instrument and the maths on any machine before a single leg exists.
+- **S2 — the bot and the capital.** The synthetic input, the steerer, the Daggerfall track
+  authored by `tools/benchTracks.mjs`, and B1 + B2 measured and shown. This is the slice
+  that can fail honestly: a track that stalls must say so.
+- **S3 — god mode and the census.** The switch at each leg start, the census readings, the
+  fail rules, and the health-moved check.
+- **S4 — the dungeon and the three fights.** B3, then B4a/B4b/B4c on the same ring of foes
+  with only the weapon swapped: the blade as booted, the bow from `testGearRows`'s archery
+  row, the spell from `addTestMissileSpells` — all three pressed through the one swing key,
+  so `magic.interceptAttack` and `weaponRig.attackInput` decide which system answers. The
+  god veto is proven here (health unchanged, and a log line saying so).
+- **S5 — the stream.** B5, on its own clock, reported apart from the frame legs.
+- **S6 — the CLI and the profiler.** `tools/benchmark.mjs`, the `cpuProfile.mjs`
+  extraction, `--reps`/`--profile`/`--zones`, JSON + Markdown out, T2/T3 green.
+- **S7 — the door and the page.** A **Benchmark** entry beside **Test Room** in the enhanced
+  menu's offline doors (`HOME_OFFLINE`), the `bible/07-Rendering/Benchmark.md` page, its
+  lines in `Page-Index.md` and `Active-Arcs.md`, and the patch notes in the PR description.
+
+## Tests
+
+- `test/systems/bench/law.test.js` — the preset URL carries `class=` and never `online`; the
+  pins are the ones the code reads; the score and grade bands (mutation-checked: a pin that
+  survives a one-character mutation is not a pin).
+- `test/systems/bench/recorder.test.js` — p99 and the 1 % low from known stamps; a single
+  frame and an empty window answer `null`, never `0` (a zero would read as "free").
+- `test/systems/bench/track.test.js` — a waypoint list yields a forward key and a bounded
+  heading; a track point off the collider is refused at author time.
+- `test/systems/bench/bot.test.js` — every code it presses is bound in `inputActions.js`'s
+  registry, and teardown releases all of them.
+- `test/systems/bench/hygiene.test.js` — a source sweep: the bench never writes
+  `player.health`, never touches the online lane, never `fetch`es a result anywhere, reaches
+  god mode only through `setStaffPowers`, and mints no item of its own (the combat kit is
+  `testRoom.js`'s — a second bow table is how two rooms drift apart).
+- The existing `test/tooling/probehygiene.test.js` picks `tools/benchmark.mjs` up on its
+  own (T2: `class=` present; T3: it judges), and `test/scenes/hostceiling.test.js` holds
+  `bootWorld` to its ceiling — the wiring line is all it gets.
+
+## Acceptance — the run is done when
+
+1. On the machine's own GPU, `?world&bench` finishes every leg unattended, shows the table,
+   and exports it.
+2. The same URL twice gives per-leg medians inside the stated spread, and a census inside
+   its floor.
+3. Every failure mode is loud: a killed player, a page error, a leg with no frames, a scene
+   that is not the scene. Each names its leg and exits non-zero from the CLI.
+4. `npm run lint`, `npm run types`, the bible's gates and the change's own test files are
+   green; `npm run cpu` is unchanged by the extraction.
+5. The first recorded run (on a real GPU — this tree's only profile is SwiftShader and says
+   so) lands in the page as the baseline the next change is measured against.
+
+## Open questions for the owner
+
+- **The run owns the machine (owner, 2026-10-19).** "when i use that tool the game will launch and
+  the character and scenes will play on their own … all in first person like im controlling the
+  game and all the user input will be disabled until the benchmark end", and the tutorials
+  disabled. So the tool is not a URL to play in: `npm run bench` launches the browser, the game
+  boots, the bot plays, and the person's hands are OUT of it — a capture-phase lock
+  (`systems/bench/lock.js`) refuses every `isTrusted` event before the hosts' own listeners see
+  it, while the benchmark's synthetic presses (`isTrusted === false`) pass by construction. The
+  pointer lock is released once (the one camera a listener cannot refuse), so the look stays the
+  bot's. Tutorials are switched off for the run and the player's own setting is put back at the
+  end, as is the lock. First person is the port's default and the lock keeps it there (the wheel,
+  which is how a player swaps to third person, is among the refused events). The card and the
+  report say all three: `run: the player's hands are locked out | tutorials off`.
+- **Decided (owner, 2026-10-19): a health pool, not `/god`.** The engine's own god mode
+  withholds the blow *before* the shield pool, the damage modifiers and the evasion roll, which
+  would take all four out of what the fight legs measure; the pool leaves every one running and
+  only makes the subtraction small. `BENCH_VITAL` is the pool, the host writes it once at the
+  start of a run (the ONE write to the body, held by `test/systems/bench/hygiene.test.js`), and
+  the report records it as `vital`. Nothing heals the body mid-run: a fight the body survives is
+  still a fight measured.
+- **A score: yes, but never alone.** The table is the measurement; the scalar is the harmonic
+  mean of the legs' 1% lows, printed beside the table and never stored without it.
+- **Which class the character is.** The kit changes the fight (a bow, a spell, a blade), so
+  the class is pinned and recorded. Recommendation: the Nord Warrior, as the Test Room's
+  baseline already is.
+- **Is a score the owner wants at all?** The table is the measurement; the scalar is a
+  convenience for "compare our machines". Recommendation: ship both, the scalar derived
+  from the table and never stored without it.
+- **The first GPU baseline.** Someone with a real GPU has to run S2 once for the page to
+  carry a number rather than a shape.
+
+## What has landed (2026-10-19)
+
+S1 and most of S2/S4/S6. Everything below is written, linted, typechecked and tested; **nothing
+below has been run against the game in this checkout** — there is no ARENA2 here — so the
+runtime pass is the one thing still owed (see "Next").
+
+| file | what it is | its pins |
+|---|---|---|
+| `src/systems/bench/law.js` | the seven legs in run order (each naming its **page**: street/crowd/stream are the streaming world's, the dungeon and its three fights the dungeon host's), the one URL per page, `parseLegs`, the harmonic mean of the legs' 1% lows and its bands, the census floor, and `BENCH_VITAL` — **the health pool** | `test/systems/bench/law.test.js` (16) |
+| `src/systems/bench/recorder.js` | a leg's stamps → mean, min, p50/p95/p99, worst and the 1% low; nothing to measure answers `null`, never `0` | `test/systems/bench/recorder.test.js` (8) |
+| `src/systems/bench/track.js` | a route's waypoints, the bearing in the hosts' own yaw, the turn as a rate, the forward-only cursor, and a route that cannot be walked refused with its reason | `test/systems/bench/track.test.js` (9) |
+| `src/systems/bench/tracks.js` | the route the city leg replays — **shipped empty on purpose**: `tools/benchTracks.mjs` writes it, and a place with no track is a leg that reports itself unrun | `test/tooling/benchtracks.test.js` (8) |
+| `src/systems/bench/bot.js` | the hands: the player's own bound codes, pressed once and released, one swing for a blade, a bow and a spell | `test/systems/bench/bot.test.js` (7) |
+| `src/scenes/benchHost.js` | the leg machine and the two page factories (`createWorldBench`, `createDungeonBench`), `window.__bench` for the CLI, and the card | `test/systems/bench/benchhost.test.js` (10) |
+| `src/ui/benchOverlay.js` | the card: the checklist while the legs run, the table when they end, the failures last, Copy/Download of its own text | `test/systems/bench/overlay.test.js` (7) |
+| `src/scenes/world.js` | the benchmark, wired: `?bench=<legs>` is a mode of the world host, ticked once a frame on the rAF stamp | `test/scenes/hostceiling.test.js` (unchanged — the wiring fits under `bootWorld`'s ceiling) |
+| `src/scenes/dungeon.js` | the same, on the dungeon host: the dungeon walked and the three fights, armed through `testRoom.js`'s producers and equipped through `equipItem` | — |
+| `tools/benchmark.mjs` | the CLI (`npm run bench`): both pages, one merged report, `--reps` medians, `--profile` through the profiler's own `aggregate`, JSON + Markdown | `test/tooling/benchmarkcli.test.js` (11) |
+| `tools/benchTracks.mjs` | the route author (`npm run tracks`): boots the pinned capital, plans a walkable route, **walks it** with the real W key, photographs every waypoint, writes the module, judges last | (the same file, above) |
+| `tools/lib/cpuProfile.mjs` | the profiler's pure half, moved whole out of `tools/cpuReport.mjs` so the benchmark and the profiler share ONE `aggregate` | `test/tooling/benchprofile.test.js` (6) |
+| `src/systems/bench/lock.js` | the player's hands off the game: a capture-phase lock that refuses every human event before the hosts' own listeners, releases the pointer lock, and lets the benchmark's synthetic presses through by construction | `test/systems/bench/lock.test.js` (5) |
+| `test/systems/bench/hygiene.test.js` | the bench's own laws swept over its own source: the body is the pool written once from the law, **no `/god`**, no online lane, **no upload path at all**, no second item table, no key code spelled | (7) |
+
+`tools/cpuReport.mjs` is +8/−137 and behaviourally identical: the moved `aggregate` was diffed
+block for block against `HEAD` and run over the committed `cpu-report.cpuprofile` (107,295
+samples) for a byte-identical answer.
+
+Documentation the gates required, done in the same change: a row per new suite and the Suite
+line in `09-Testing/Testing.md`; the `391 modules` line in `10-UI/UI.md` with the card's entry;
+the `703 modules` line in `06-Systems/Systems.md` with the bench's four.
+
+**Verified:** `npm run lint`, `npm run types`, every suite above, `probehygiene`, `hostceiling`,
+and — on an **LF checkout** at `HEAD` with the change applied — `manifest`, `citeanchor`,
+`citedrift`, `ledger` and `audit18_bible_docs`, all green. (`mutantdrift` is red on `HEAD`
+itself in this checkout, naming records that no longer apply: it is not this change's.)
+
+**Next, and the only thing missing:** the capital's track, which only a machine with the data can
+author (`npm run tracks --headed`). Everything else runs today.
+
+## The first real run (2026-10-19, the owner's machine, Opera GX on an AMD iGPU)
+
+```
+$env:ARENA2_PATH = "C:\Users\ruben\Downloads\DaggerfallGameFiles\arena2"
+npm run bench -- --legs crowd,stream
+
+leg                       1% low    fps      p95      p99    script      gpu  draws
+The crowd                     30     35     33.3     33.4      19.3        —  657
+The stream                     7      7    133.5    133.5      19.3        —  657
+SCORE 12 (D)
+```
+
+What the run cost, and what it found:
+
+- **THE BROWSER IS THE MACHINE'S, NOW** (`tools/lib/browser.mjs`). The first `npm run bench` failed
+  with "no browser to launch" on a machine holding two perfectly good Chromiums: playwright wanted
+  its own build (1194), the cache had 1217/1234, and the ladder read the CI's `/opt/pw-browsers`
+  path. It is now: `CHROME=`, **the OS's default browser by its own registry answer**, playwright's
+  bundled build, the installed Chrome/Edge by channel, its cache, then the known paths - every rung
+  tried, and the winner printed (`bench: browser - ...opera.exe`). The number belongs to that
+  browser, so the run says which one it was.
+- **THE WINDOW WAS MEASURED THROTTLED.** A Chromium window that opens behind the terminal is
+  *occluded*, and an occluded window's frames are throttled to about one a second: the first runs
+  measured a 1 fps "game" that was the browser's own throttle, and its boot never finished. The
+  launch now refuses every throttle (`--disable-backgrounding-occluded-windows`,
+  `--disable-background-timer-throttling`, `--disable-renderer-backgrounding`) and raises the
+  window. 1 fps -> 60.
+- **THE WIRING WAS IN A BLOCK THAT NEVER RAN.** BENCH1's `?bench` wiring had landed inside
+  `if (hud) {`, so the host was never created on a machine whose HUD was not up - the run
+  reported "lost window.__bench" over a game playing perfectly. Moved to the top level of the boot.
+- **THE CROWD'S CENSUS WAS WRONG, AND THE TRUTH IS A FINDING.** The leg required 8 townsfolk and
+  read 0. The game's own probe says why: Daggerfall's population pool is **empty** (`pool 0`,
+  `maxPopulation 96`) while the street is built and drawing 657 calls. So the world legs are now
+  censused by the town being built (`pixels`, the scene's structural fact) with the crowd
+  **reported beside it** - `census: { pixels: 3, people: 0 }` - which is how that emptiness became
+  visible instead of being a red card hiding the frame rate. **Whoever owns the population system
+  should look at why a capital at noon has an empty pool**; the benchmark will keep reporting it.
+- **Still owed:** the street track (`npm run tracks --headed`), the dungeon page's first real run,
+  and the card's `gpu` column (the perf meter exposes no last-GPU read to a module yet - the
+  number is in `--profile`).
+
+

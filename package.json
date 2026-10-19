@@ -26,6 +26,8 @@
     "x11": "node tools/x11Probe.mjs",
     "perf": "node tools/perfProbe.mjs",
     "cpu": "node tools/cpuReport.mjs",
+    "bench": "node tools/benchmark.mjs",
+    "tracks": "node tools/benchTracks.mjs",
     "x11c": "node tools/identifyOutdoorsProbe.mjs",
     "trademodes": "node tools/tradeModeProbe.mjs",
     "peoplegate": "node tools/peopleGateProbe.mjs",

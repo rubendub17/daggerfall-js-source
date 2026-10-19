@@ -117,3 +117,8 @@ cpu-report.md
 cpu-report.cpuprofile
 cpu-report-fail.png
 
+# BENCH1: tools/benchmark.mjs's default outputs - the run's own report, JSON and markdown. A run
+# writes them and a person reads them; the TOOL is the source. Never committed.
+benchmark-report.json
+benchmark-report.md
+benchmark-report.cpuprofile

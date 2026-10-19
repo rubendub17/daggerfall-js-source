@@ -113,6 +113,10 @@ import { chromium } from 'playwright';
 import { writeFileSync, readdirSync, existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+// THE PURE HALF, WHICH MOVED: the frame vocabulary, the self-time table, the `[perf]` line and the
+// allocation sampler's tree live in tools/lib/cpuProfile.mjs now, so BENCH1 imports the same four
+// functions the report is written by (docs/Benchmark-Tool-Plan.md) instead of holding a second copy.
+import { aggregate, aggregateAlloc, parsePerf } from './lib/cpuProfile.mjs';
 
 // FLAGS FIRST, SO NOBODY HAS TO KNOW THEIR SHELL. `$env:X='y'` is PowerShell and
 // `set X=y` is cmd; pasting one into the other fails before Node ever runs (cmd
@@ -229,77 +233,6 @@ const MEMORY = process.env.MEMORY !== '0';
 const SNAPSHOT = process.env.SNAPSHOT === '1';
 const HEAP_SAMPLING = Math.max(1024, Number(process.env.HEAP_SAMPLING || 32768));
 
-/**
- * Where a sampled frame lives, in the report's own vocabulary. V8's own buckets
- * carry no url and are NOT GL - `(program)` is time outside any JS function and
- * `(garbage collector)` is the collector - so each is named for what it is: the
- * "a big (native) entry means a GPU-bound frame" reading must not be applied to
- * them by accident.
- */
-function framePlace(cf) {
-  const url = (cf.url || '').replace(/[?#].*$/, '');
-  const line = (cf.lineNumber ?? 0) + 1;
-  if (!url) {
-    const fn = cf.functionName || '';
-    if (fn === '(idle)') return { file: '(idle)', line: 0, game: false };
-    if (fn === '(program)') return { file: '(v8: program)', line: 0, game: false };
-    if (fn === '(garbage collector)') return { file: '(v8: gc)', line: 0, game: false };
-    // The allocation sampler's own pseudo-frames, which carry no url either: naming
-    // them keeps them out of a `(native)` row a reader would take for a GL call.
-    if (fn === '(IDLE_EXTERNAL)') return { file: '(v8: idle external)', line: 0, game: false };
-    if (fn === '(BYTECODE_COMPILER)') return { file: '(v8: bytecode compiler)', line: 0, game: false };
-    if (fn === '(GC)') return { file: '(v8: gc)', line: 0, game: false };
-    if (fn === '(ROOT_OVERFLOW)') return { file: '(v8: root overflow)', line: 0, game: false };
-    if (fn === '(UNKNOWN)') return { file: '(v8: unknown)', line: 0, game: false };
-    return { file: '(native)', line: 0, game: false };
-  }
-  const src = url.match(/\/src\/(.*)$/);
-  if (src) return { file: `src/${src[1]}`, line, game: true };
-  // THE BUILT SITE IS THE GAME TOO. On the deployed pages vite bundles the whole
-  // source into /assets/<name>-<hash>.js; there is no /src/ path to match, so the first
-  // cut of this classified every game function as "everything else" and then refused
-  // its own report over a world that was running perfectly ("game code 0.0%").
-  const built = url.match(/\/(assets)\/(.*\.m?js)$/);
-  if (built) return { file: `assets/${built[2]}`, line, col: (cf.columnNumber ?? 0) + 1, game: true };
-  const dep = url.match(/\/node_modules\/(?:\.vite\/deps\/)?(.*)$/);
-  if (dep) return { file: `node_modules/${dep[1]}`, line, game: false };
-  return { file: url.replace(/^https?:\/\/[^/]+/, ''), line, game: false };
-}
-
-/**
- * The profile's samples, summed per (function, file, line) as SELF time: the
- * milliseconds each function spent in its own body, which is the number to
- * optimise. A caller's total (self plus callees) answers a different question -
- * "what is expensive because of this entry point" - and DevTools' flame chart is
- * the better place to ask it. `timeDeltas[i]` is the gap before `samples[i]`, so
- * it is attributed to that sample rather than assuming the nominal interval: the
- * delta sum is the wall time actually sampled.
- * @param {any} profile the Profiler.stop payload
- */
-export function aggregate(profile, interval = SAMPLING) {
-  const byId = new Map((profile.nodes ?? []).map((n) => [n.id, n]));
-  const selfUs = new Map();
-  const deltas = profile.timeDeltas ?? [];
-  (profile.samples ?? []).forEach((id, i) => {
-    const d = deltas[i] ?? interval;
-    selfUs.set(id, (selfUs.get(id) ?? 0) + d);
-  });
-  const rows = new Map();
-  for (const [id, us] of selfUs) {
-    const cf = byId.get(id)?.callFrame ?? {};
-    const where = framePlace(cf);
-    const fn = cf.functionName || '(anonymous)';
-    const key = `${where.file}\u0000${fn}\u0000${where.line}`;
-    const row = rows.get(key) ?? { fn, ...where, us: 0 };
-    row.us += us;
-    rows.set(key, row);
-  }
-  const list = [...rows.values()].sort((a, b) => b.us - a.us);
-  const totalUs = list.reduce((a, r) => a + r.us, 0);
-  const wallSeconds = Math.max(0, ((profile.endTime ?? 0) - (profile.startTime ?? 0)) / 1e6);
-  return { list, totalUs, wallSeconds, samples: (profile.samples ?? []).length };
-}
-
 const pct = (us, total) => (total ? (us / total) * 100 : 0);
 const ms = (us) => us / 1000;
 const f = (n, d = 1) => Number(n).toFixed(d);
@@ -308,39 +241,6 @@ const fbytes = (b) => (b >= 1048576 ? `${f(b / 1048576)} MB` : `${f(b / 1024)} K
 /** Where a row lives. A built bundle keeps every function on line 1, so its column is
  *  the part that identifies it - `assets/main-ab12.js:1:20481` is a place you can find. */
 const at = (r) => `${r.file}${r.line ? `:${r.line}` : ''}${r.col ? `:${r.col}` : ''}`;
-
-/**
- * THE `[perf]` LINE, READ (src/render/perfMeter.js). Two shapes, and the units tell them
- * apart - a count has no decimal point, a zone is always `toFixed(2)`:
- *   `[perf] gpu 21.40ms | draws 1210 | sun 3c/12d | lanterns 4k/12f/9d | ...`
- *   `[perf] gpu 21.40ms | shadow 9.10 | grass 3.20 | air 1.80 | draws 1210`
- * `gpu n/a` is the browser refusing EXT_disjoint_timer_query_webgl2 - the line is still
- * worth reading for its counts, and the timer being absent is not a zero. The LAST line
- * is the one returned: it is the mean of the frames the recording ended on.
- * @param {string[]} lines every `[perf]` console line seen, oldest first
- */
-export function parsePerf(lines) {
-  const last = Array.isArray(lines) ? lines[lines.length - 1] : null;
-  if (!last) return null;
-  const body = last.replace(/^.*?\[perf\]/, '').trim();
-  const parts = body.split('|').map((s) => s.trim()).filter(Boolean);
-  let gpuMs = null;
-  let cpuMs = null;
-  const zones = [];
-  const counts = [];
-  for (const p of parts) {
-    const total = p.match(/^(gpu|cpu) ([\d.]+)ms$/i);
-    // WHICH CLOCK, KEPT. `?perf=cpu` (perfMeter.js's PERF-CPU arm) tiles the frame on the MAIN THREAD's
-    // clock, so its total is not the GPU's and must never be printed as one - a report comparing a CPU
-    // total against the JavaScript would invent a split out of the same milliseconds counted twice.
-    if (total) { if (total[1].toLowerCase() === 'gpu') gpuMs = Number(total[2]); else cpuMs = Number(total[2]); continue; }
-    if (/^(gpu|cpu) n\/a$/i.test(p)) continue;
-    const zone = p.match(/^(.*?) (\d+\.\d+)$/);
-    if (zone) { zones.push([zone[1], Number(zone[2])]); continue; }
-    counts.push(p);
-  }
-  return { gpuMs, cpuMs, zones, counts, body, seen: lines.length };
-}
 
 /**
  * WHICH HALF OF THE FRAME THIS IS, said in one line. The GPU number is the page's own
@@ -370,38 +270,6 @@ function bottleneckOf(gpuMs, jsPerFrame) {
     text: `**split**: ${f(jsPerFrame, 2)} ms of game JS and ${f(gpuMs, 2)} ms of GPU - neither side owns the frame, `
       + 'so the frame is lost between them (the present, or the driver waiting on both).',
   };
-}
-
-/**
- * The allocation sampler's tree, summed per (function, file, line) as SELF bytes:
- * what that function's own frame allocated while it ran. `HeapProfiler.startSampling`
- * samples the heap every `samplingInterval` bytes and attributes each sample to the
- * JS stack that made it, so this is the same shape as the CPU table - the functions
- * that allocate, not the constructors the heap holds. For what the heap CONTAINS
- * (counts by constructor, retained sizes) take a snapshot: SNAPSHOT=1.
- * @param {any} profile HeapProfiler.stopSampling's profile
- */
-export function aggregateAlloc(profile) {
-  if (!profile?.head) return null;
-  const rows = new Map();
-  let total = 0;
-  const stack = [profile.head];
-  while (stack.length) {
-    const node = stack.pop();
-    const bytes = node.selfSize || 0;
-    if (bytes > 0) {
-      const cf = node.callFrame || {};
-      const where = framePlace(cf);
-      const fn = cf.functionName || '(anonymous)';
-      const key = `${where.file}\u0000${fn}\u0000${where.line}`;
-      const row = rows.get(key) ?? { fn, ...where, bytes: 0 };
-      row.bytes += bytes;
-      total += bytes;
-      rows.set(key, row);
-    }
-    for (const c of node.children || []) stack.push(c);
-  }
-  return { list: [...rows.values()].sort((a, b) => b.bytes - a.bytes), total };
 }
 
 /** One markdown table of rows. `perFrame` is the ms of a frame this function
@@ -741,7 +609,10 @@ try {
   const after = await stats();
   await cdp.send('Profiler.disable');
 
-  const { list, totalUs, wallSeconds, samples } = aggregate(profile);
+  // SAMPLING SAID OUT LOUD: the moved `aggregate` falls back to 250 µs of its own only for a sample
+  // that carries no delta, and the script's own interval (SAMPLING, `--sampling`) is passed here so a
+  // `--sampling` run reads exactly as it did before the move.
+  const { list, totalUs, wallSeconds, samples } = aggregate(profile, SAMPLING);
   const fps = after?.fps ?? before?.fps ?? null;
   // Frames in the window the profiler ACTUALLY covered, not the one that was asked
   // for: `ms/frame` would otherwise be scaled by the difference between them.

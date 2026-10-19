@@ -264,6 +264,7 @@ import { createProfBook } from '../net/profBook.js';   // PROF1: this character'
 import { createMotherlodeBook } from '../net/motherlodeBook.js';   // PROF2b: the day's Motherlodes - read, warned of, their Watch receipts kept
 import { createProfHud } from '../ui/professions/profHud.js';   // PROF1: the prompt, the act's meter, the toasts, the day's chip, the rank's banner
 import { createGatherHost } from './gatherHost.js'; // PROF1/PROF2: the gathering professions in the streaming world - the nodes, the target, the act
+import { createWorldBench } from './benchHost.js';   // BENCH1: the benchmark, as a mode of this host - the streets, the crowd and the stream, measured
 import { herbKind } from './herbHost.js';   // PROF1: Herbalism's patches, a kind in it
 import { mineKind } from './mineHost.js'; import { nodeCompassPoints } from '../ui/nodeMarks.js'; import { createNodeGlowPass } from '../render/nodeGlow.js';   // PROF2: Mining's veins and Quarrying's boulders, a kind in it; NODE-MARKS: every profession's nodes on the compass in its colour, and lit where they stand
 import { treeKind, FOREST_STAMP } from './treeHost.js';   // PROF4: Logging's trees - the forest's own - a kind in it; LPT1: the felled trees' count, the near 3D trees' regather
@@ -2082,6 +2083,7 @@ export async function bootWorld(canvas, renderer, params, status) { handHeroGend
    *  read before its line is a dead zone, whatever `?.` says). The pixels built before it stand their nodes when the
    *  state is first read. */
   let gatherHost = null;
+  let bench = null;   // BENCH1: the benchmark (`?bench=<legs>`), made once its deps are alive and ticked with the frame
   /** PROF2b (bible/06-Systems/Professions-Arc.md 38): THE DAY'S MOTHERLODES on this device (net/motherlodeBook.js) -
    *  today's three as the service said them, warned of in the chat ten minutes ahead (a Motherlode Sense's thirty), the
    *  relay's Watch receipts kept for a strike, and a change of standing handed to the gathering host to stand its pixel
@@ -32495,6 +32497,39 @@ const _pixelOrder = [];   // NEAR-FIRST: the frame's pixel walk, nearest first -
   const _stopPace = onTravelPace(() => { if (!frameAlive(_frameToken)) { _stopPace(); return; } travelOptions?.reapplyRate?.(); });
   const _frameToken = claimFrame();   // P0: this session owns the loop until someone claims after it
   status(null);   // FB0930-TITLE: the boot is done - the window loses its last loading step
+  // BENCH1: THE BENCHMARK (`?bench=<legs>`), a mode of THIS host rather than a fifth copy of it -
+  // the capital's streets at a run, the crowd and a map journey, walked and measured by the real
+  // streamer, motor, crowd and renderer, offline. Every dep below is a question this host already
+  // answers for its own HUD; a question it cannot answer makes its leg a NAMED failure, never a
+  // guessed success. The bot presses the player's own bindings, so a rebound Walk Forward still
+  // benchmarks, and the look is the port's own (`__look`'s `cam.yaw += delta`).
+  if (params.has('bench')) {
+    bench = createWorldBench({
+      params, built, bindings, codeForAction, travelView, document: globalThis.document,
+      feet: () => [...(walkMode && playerSpawned ? player.pos : cam.pos)],
+      heading: () => cam.yaw,
+      turnBy: (rad) => { cam.yaw += rad; lookFilter.settle(); },
+      entity: () => playerEntity,
+      renderer: () => renderer,
+      settle: () => queue.length === 0 && !building && inFlight.size === 0,   // the stream's own test (world.js's __streamIdle is the shot gate's copy of it)
+      travel: () => !!travelView?.enter?.(),
+      build: () => BUILD_TAG,
+      // BENCH1: no window may hold the motor between legs - the opening boxes, a tutorial
+      // page, a level-up. A leg under a modal measures a paused game.
+      quiet: () => { for (let n = 0; townTalk.overlayActive && n < 40; n++) townTalk.closeOverlay?.(); },
+      // BENCH1: HOW MANY TOWNSFOLK ARE ABOUT, asked of the host's own probe (`__people`, the one
+      // the HUD and the screenshots read) before this file's own walk of the built pools. The
+      // census is what proves two runs measured the same street, so it must be the game's count.
+      people: () => {
+        try { const raw = window.__people?.(); if (typeof raw === 'string') return JSON.parse(raw).length; } catch { /* a host with no probe */ }
+        let n = 0;
+        for (const p of built.values()) { if (!p?.population) continue; for (const it of p.population.pool) if (it.active) n++; }
+        return n;
+      },
+    });
+    console.info(`[bench] ${bench.surface.legs.join(', ')} - offline, on the real game`);
+  }
+
   function frame(now) {
     // AUDIT-WH L4: THE PLAQUE DIES WITH THE LOOP THAT RAISED IT. This
     // is the host's only unwind point - a later boot or an unwind has
@@ -33876,6 +33911,7 @@ const _pixelOrder = [];   // NEAR-FIRST: the frame's pixel walk, nearest first -
     try { bountyHost?.tick(dt); } catch (e) { console.warn('[bounty] tick', e); }   // BOUNTY1: the hunts - packs stood and counted, a purse paid, a notice raised
     try { legacyStep(dt); } catch (e) { console.warn('[legacy] tick', e); }   // LEGACY1: the seat, the elder, the estate, a dead load
     try { gatherHost?.tick(dt); } catch (e) { console.warn('[prof] tick', e); }   // PROF1: the patches, the prompt, the act, the answers
+    try { bench?.tick(dt, now); } catch (e) { console.warn('[bench] tick', e); }   // BENCH1: the benchmark's leg - ONE tick a frame, on the rAF stamp the FPS counter also measures, so a leg and the counter share a clock
     // NOTICE1: the town the player stands in is read on arrival (a minute's cache, net/noticeBook.js) - so its boards'
     // count floats over them and its board opens as the Notice Board at the first press, not the second
     // AUDIT SCALE B7: once a second by the wall clock, not by the frame's dt - the dt is clamped at 0.1 s, so at four

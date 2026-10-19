@@ -64,7 +64,7 @@ import { FOUND_NOTHING_VALUABLE_TEXT_ID } from '../systems/talk/talk.js';   // G
 import { hideWorldPlaque, destroyWorldPlaque } from '../ui/worldPlaque.js';   // AUDIT-WH H4: the plaque's hide door, for the overlay branch that returns above drawFoes
 import { quickLootWheel, quickLootArm } from '../systems/quickLoot.js';   // QUICK-LOOT B4: the plaque owns the wheel while it lists, and the two keys arm what the next activate means
 import { createMusicDirector, fetchBytes, motorStats, climbingDeps, parkourDeps, ridePlatform, doorSpellFor, wireDoorSpells, claimFrame, frameAlive, frameHeld } from './shared.js';
-import { isTextEntryTarget, keyEdges, noteKeyDown, noteKeyUp, beginInputFrame, pressed, released, routeKey, routeKeyUp, held, moveHeld, anyMove, actionsOf, swallowBrowserKey, mouseCode, isSwingButton, swingHeld, keyboardLook, installContextMenuGuard, swingKeyHeld } from '../ui/input.js';
+import { isTextEntryTarget, keyEdges, noteKeyDown, noteKeyUp, beginInputFrame, pressed, released, routeKey, routeKeyUp, held, moveHeld, anyMove, actionsOf, swallowBrowserKey, mouseCode, isSwingButton, swingHeld, keyboardLook, installContextMenuGuard, swingKeyHeld, bindings } from '../ui/input.js';
 import { armUnloadGuard } from '../systems/unloadGuard.js';   // MAC-L3: one door in front of every way out of a running game   // AUDIT 39r: the mouse half of the held set
 import { createActivateGate, activateFrame, setClickDelay } from '../systems/activateGate.js';   // A8: PlayerActivate's ActivateCenterObject frame
 import { capturePendingScreenshot } from '../systems/save/saveSlots.js';   // SS1: the context arms the shot, THIS loop delivers it
@@ -86,6 +86,9 @@ import { CameraRecoiler } from '../player/cameraRecoiler.js';   // AUDIT 28 W9: 
 import { HeadBobber } from '../player/headBobber.js';   // AUDIT 28 W10: HeadBobbing
 import { createClimbFeelHost } from '../player/climb/climbFeel.js'; import { playerClimbStrain, playerBlowFrame } from './hostCombat.js';   // CLIMB4: the climb's camera, and its effort's voice
 import { lastHealthLost, lastHealthLostPercent } from '../ui/hud/hudVitals.js';   // AUDIT 28 W9: the detector's loss
+import { createDungeonBench } from './benchHost.js';   // BENCH1: the benchmark, as a mode of this host - the dungeon walked and one ring of foes fought three ways
+import { codeForAction } from '../systems/inputActions.js';   // BENCH1: the bench presses the player's OWN bindings, read here rather than assumed
+import { equipItem } from '../systems/equip.js';   // BENCH1: the bow the fight leg carries, through the game's own equip table
 import { fieldOfView } from '../ui/viewSettings.js';   // MENU: Video/FieldOfView, one home for five hosts
 import { carriedWeight } from '../systems/inventory.js';   // F027 / E4: PlayerEntity.CarriedWeight, the gold counter's term and all
 import { windowEmissionRGB } from '../render/windowEmission.js';   // AUDIT 26 F001/F002: WindowStyle per host (DaggerfallInterior.cs:473/:517/:1270 vs GetMaterial's Day default)
@@ -230,6 +233,22 @@ export async function bootDungeon(canvas, renderer, params, status) {
     immersiveFootsteps.onTransitionDungeonInterior();   // IF1: the standalone dungeon boot IS the dungeon transition (UpdateFootsteps_OnTransitionDungeonInterior)
     betterAmbience.onTransition({ dungeon: { regionName: dfLocation.regionName, name: dfLocation.name, inCastle: () => !!ctx.insideDungeonCastle?.(), exitPos: ctx.enterMarker ? [ctx.enterMarker.x, ctx.enterMarker.y, ctx.enterMarker.z] : null } });   // BA1: the boot is the dungeon transition here too
   player.spawn(spawn[0], spawn[1], spawn[2]);
+// BENCH1: THE BENCHMARK (`?bench=<legs>`), a mode of THIS host rather than a fifth copy of it -
+// the dungeon walked, and one ring of foes fought three ways (a blade, a drawn bow and a readied
+// spell, all three through the ONE swing key the game's ladder routes). The bench presses the
+// player's own bindings, takes the person's hands off the game, and undoes both when the run ends.
+const bench = params.has('bench') ? createDungeonBench({
+  params, bindings, codeForAction, equip: (item) => equipItem(playerEntity, item),
+  feet: () => [...player.pos],
+  heading: () => cam.yaw,
+  turnBy: (rad) => { cam.yaw += rad; lookFilter.settle(); },
+  entity: () => playerEntity,
+  renderer: () => renderer,
+  foes: () => ctx.foes ?? [],
+  spellsByIndex: () => ctx.spellsByIndex?.() ?? null,
+  setReadied: (sp) => ctx.magic?.setReadied?.(sp),
+  document: globalThis.document,
+}) : null;
   console.log(`[spawn] marker ${JSON.stringify(ctx.startMarker)} -> feet [${spawn.map((v) => v.toFixed(3)).join(', ')}] (startSpawn build)`);
   // P10 Teleport actions: player transform = the destination object's
   // (DFU DaggerfallAction.Teleport :576-599). spawn() zeroes velY and
@@ -1143,6 +1162,7 @@ export async function bootDungeon(canvas, renderer, params, status) {
     for (const d of ctx.dynamicDraws) renderer.drawMesh(d.gpu, d.object.matrix, ctx.texRemap);
     const camRight = new Float32Array([Math.cos(cam.yaw), 0, -Math.sin(cam.yaw)]);
     ctx.flatAnims.tick(dt);   // FA1: whoever draws the flats runs their clock
+    try { bench?.tick(dt, now); } catch (e) { console.warn('[bench] tick', e); }   // BENCH1: the benchmark's leg, ONE tick a frame on the rAF stamp the FPS counter also measures
     // (the blood pool's clock runs inside ctx.drawFoes now - both dungeon
     // hosts call it, so neither can forget it; 2026-08-27)
     noteLocalPlayer(player.pos, [Math.sin(cam.yaw), 0, Math.cos(cam.yaw)]);   // TACT2: where I stand and face
