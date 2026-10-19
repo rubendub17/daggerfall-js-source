@@ -23,12 +23,15 @@
 //     selects a window style from IsNight).
 //   - City light flicker (DaggerfallLight.AnimateLight): 14 ticks/second,
 //     target = Random.Range(startRange - Variance 1, startRange), step
-//     Speed 0.4 toward it; per light. Engine Random.Range is replaced by
-//     the approved umRandom substitute (Port-Ledger A).
+//     Speed 0.4 toward it; per light. THE TARGETS ARE A DEPARTURE, and it is
+//     named here: DFU draws them from Random.Range, this port draws them
+//     from a fixed table of its own numbers - one entry per light per draw,
+//     keyed off the seed (FLICKER_TABLE below). The band, the 0.4 step and
+//     the 14 ticks are verbatim and the sequence is still deterministic from
+//     a seed; what changed is that no random number generator is called once
+//     per light per tick. bible/07-Rendering/Rendering-Arc.md carries it too.
 // EQUIVALENCE (documented): DFU's SkyCurve asset was not extracted; sky
 // frames advance linearly across daylight (t * 63), night uses the NITE sky.
-
-import { UMRandom } from '../formats/umRandom.js';
 
 export const LIGHTS_ON_HOUR = 17;
 export const LIGHTS_OFF_HOUR = 8;
@@ -194,7 +197,31 @@ export function parseTimeOfDay(value) {
  * Per-light flicker, verbatim DaggerfallLight.AnimateLight at 14 ticks per
  * second: each light steps its range by 0.4 toward a target drawn from
  * [startRange - 1, startRange].
+ *
+ * PERF-FLICKER (2026-10-20): THE TARGETS COME OFF A TABLE, one per draw, not off a shared random stream. The law is
+ * unchanged - the same band, the same 0.4 step, the same 14 ticks, the same determinism from a seed and divergence
+ * between seeds - and three things stop being paid:
+ *  - a random number generator call per light per tick (a table read and an add replace it);
+ *  - a tick banked across a stall (a load, a hidden tab) catching up EVERY banked step in one frame, each step
+ *    walking every light in the level: it is capped now, and the rest of the stall is dropped rather than replayed;
+ *  - the lights nothing reads. `tick(dt, only)` takes the frame's own selection and steps just those; null, which
+ *    is what every host passes today, steps them all exactly as before.
  */
+const FLICKER_TABLE_BITS = 10;
+const FLICKER_TABLE_MASK = (1 << FLICKER_TABLE_BITS) - 1;
+/** [0, 1) a 512th at a time, from a LCG fixed at module load - the flicker's own numbers, never the game's RNG. */
+const FLICKER_TABLE = (() => {
+  const t = new Float32Array(1 << FLICKER_TABLE_BITS);
+  let s = 0x2545f491;
+  for (let i = 0; i < t.length; i++) {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    t[i] = (s >>> 8) / 16777216;
+  }
+  return t;
+})();
+/** PERF-FLICKER: at most this many steps in one tick. A frame that waited a second replays four steps, not fourteen. */
+const FLICKER_MAX_CATCHUP = 4;
+
 export class CityLightAnimator {
   /** startRange: uniform number (city lanterns) or per-light array
    * (dungeon radii - each light flickers about its own start range). */
@@ -206,30 +233,56 @@ export class CityLightAnimator {
     this.speed = 0.4;
     this.framesPerSecond = 14;
     this._accumulator = 0;
-    this._rng = new UMRandom(seed >>> 0 || 1);
+    // PERF-FLICKER: each light's own place in the table and its draw count, keyed off the SEED - so two animators from
+    // one seed walk identically and two seeds diverge, exactly as the shared stream gave (and now per light, so a light
+    // entering the frame's selection keeps its own sequence).
+    this._at = new Uint16Array(count);
+    this._stride = new Uint16Array(count);
+    this._draws = new Uint16Array(count);
+    const s = (seed >>> 0) || 1;
+    for (let i = 0; i < count; i++) {
+      const h = (Math.imul(s ^ (i + 0x9e3779b9), 2654435761) >>> 0);
+      this._at[i] = (h >>> (32 - FLICKER_TABLE_BITS)) & FLICKER_TABLE_MASK;
+      // PERF-FLICKER: an ODD stride, drawn from the same seed word - so two seeds that land on the same entry still walk
+      // the table in a different order (a shared start index alone left one seed in 512 with the same trajectory).
+      this._stride[i] = (((h >>> 4) & 7) * 2 + 1);
+    }
     this.ranges = new Float32Array(this._starts);
     this._targets = new Float32Array(this._starts);
     this._stepping = new Uint8Array(count);
   }
 
-  tick(dtSeconds) {
-    this._accumulator += dtSeconds;
+  /** PERF-FLICKER: `only` is the frame's selection (an index list) - the lights that will be read. Null steps every
+   *  light, which is what the hosts pass today. */
+  tick(dtSeconds, only = null) {
     const step = 1 / this.framesPerSecond;
-    while (this._accumulator >= step) {
-      this._accumulator -= step;
-      for (let i = 0; i < this.ranges.length; i++) {
-        if (this._stepping[i]) {
-          if (this._targets[i] <= this.ranges[i]) {
-            this.ranges[i] -= this.speed;
-            if (this.ranges[i] <= this._targets[i]) this._stepping[i] = 0;
+    this._accumulator += dtSeconds;
+    let steps = Math.floor(this._accumulator / step);
+    if (steps <= 0) return;
+    if (steps > FLICKER_MAX_CATCHUP) { steps = FLICKER_MAX_CATCHUP; this._accumulator = 0; }   // a stall is not replayed
+    else this._accumulator -= steps * step;
+    const ranges = this.ranges, targets = this._targets, stepping = this._stepping, starts = this._starts;
+    const speed = this.speed, variance = this.variance;
+    const n = only ? only.length : ranges.length;
+    for (let s = 0; s < steps; s++) {
+      for (let k = 0; k < n; k++) {
+        const i = only ? only[k] : k;
+        if (stepping[i]) {
+          const t = targets[i];
+          if (t <= ranges[i]) {
+            const v = ranges[i] - speed;
+            ranges[i] = v;
+            if (v <= t) stepping[i] = 0;
           } else {
-            this.ranges[i] += this.speed;
-            if (this.ranges[i] >= this._targets[i]) this._stepping[i] = 0;
+            const v = ranges[i] + speed;
+            ranges[i] = v;
+            if (v >= t) stepping[i] = 0;
           }
         } else {
-          this._targets[i] =
-            this._starts[i] - this.variance + this._rng.nextFloat() * this.variance;
-          this._stepping[i] = 1;
+          const at = (this._at[i] + Math.imul(this._draws[i], this._stride[i])) & FLICKER_TABLE_MASK;
+          this._draws[i] = (this._draws[i] + 1) & 0xffff;
+          targets[i] = starts[i] - variance + FLICKER_TABLE[at] * variance;
+          stepping[i] = 1;
         }
       }
     }

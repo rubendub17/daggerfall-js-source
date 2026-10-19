@@ -164,13 +164,20 @@ test('LA-COST1: the point colours are decoded ONCE A CHANGE, not once a program 
   r._pointColorData(20); r._pointColorData(20, true);
   assert.equal(decodes, before, 'the memo again, and the raw read decodes nothing');
   assert.deepEqual([...r._pointColorData(20, true).subarray(0, 3)], [0.5, 0.25, 0.75], 'raw: the colours as the host gave them (the water, the flat light at the eye)');
-  // more lights than were decoded: decoded again
-  r._pointColorData(5);
-  r.setPointLights(lightsOf(4), new Float32Array([0.5, 0.25, 0.75]));
-  r._pointColorData(2);
+  // a count past what the memo holds: decoded again. PERF-FLICKER: what it holds is the count it was DECODED at, so an
+  // ask inside that is its prefix whatever the last ask was - and a colour that did not move decodes nothing.
+  r.setPointLights(lightsOf(6), new Float32Array([0.4, 0.4, 0.4]));
+  r._pointColorData(3);
   const n2 = decodes;
-  r._pointColorData(4);
+  r._pointColorData(3);
+  assert.equal(decodes, n2, 'the memo again: nothing moved');
+  r._pointColorData(6);
   assert.equal(decodes, n2 + 1, 'a count past the decoded one decodes again');
+  const n2b = decodes;
+  r.setPointLights(lightsOf(6), new Float32Array([0.4, 0.4, 0.4]));
+  assert.deepEqual([...r._pointColorData(2)], [...elDecodeN(new Float32Array([0.4, 0.4, 0.4, 0.4, 0.4, 0.4]), new Float32Array(6), 2)], 'the prefix off the memo');
+  assert.equal(decodes, n2b, 'the same colours set again: no decode at all');
+  r.setPointLights(lightsOf(20), new Float32Array([0.5, 0.25, 0.75]));   // the shared colour the lane swap below reads
   // the lane swapped out and back: the classic set takes the colours as given, and the lane decodes afresh
   r.setLightingLane(null);
   assert.deepEqual([...r._pointColorData(4).subarray(0, 3)], [0.5, 0.25, 0.75], 'classic: as given');
@@ -190,7 +197,9 @@ test('LA-COST1: the point colours are decoded ONCE A CHANGE, not once a program 
   const body = (name) => { const at = src.indexOf(`\n  ${name}(`); return src.slice(at, src.indexOf('\n  }\n', at)); };
   for (const m of ['setPointLights', 'setFlashLight', 'setLightingLane']) assert.match(body(m), /this\._pointColorGen\+\+;/, `${m} moves the colours' generation`);
   assert.equal((src.match(/this\._pointColors = /g) || []).length, 4, 'the colours\' writers: the constructor and the three above - a fifth must move the generation');
-  assert.match(body('_pointColorData'), /this\._pointColorDecGen === this\._pointColorGen && this\._pointColorDecLane === lane && this\._pointColorDecCount >= count/);
+  assert.match(body('_pointColorData'), /this\._pointColorDecGen === this\._pointColorGen/, 'the memo asks the generation');
+  assert.match(body('_pointColorData'), /this\._pointColorDecLane === lane && this\._pointColorDecCount >= count/, '...and the lane and the count');
+  assert.match(body('_pointColorData'), /this\._pointColorsMoved\(\)/, 'PERF-FLICKER: and the VALUES, before the decode is paid - a moved generation is not always a moved colour');
 });
 
 test('LA-COST1: THE SECOND CALL IN A FRAME SENDS ONLY ITS OWN - a billboard call re-sends its basis, the wind, the spectral and conceal flags and its batches\' size, origin and sway; a decal call its atlas; a character call its model matrix and its ranges\' texture flags - and no unit past 7 is touched: the lane\'s block went up with the first (mutants: a gate dropped; a gate on the wrong stamp)', () => {

@@ -1837,6 +1837,10 @@ export class Renderer {
     this._pointColorDecGen = -1;
     this._pointColorDecCount = 0;
     this._pointColorDecLane = null;
+    this._pointColorsUp = null;   // PERF-FLICKER: the point-light colours the decode memo was built from, by value
+    this._pointColorsUpLen = -1;  // ...and how much of that snapshot is live (the list's length tracks the lit count)
+    this._pointColorUp = null;    // ...and the shared single colour's, for the hosts that pass one
+    this._pointColorDecBuf = null;   // ...and the decode buffer the memo belongs to (a lane swap can replace it)
     this._windowEmission = new Float32Array([0, 0, 0]);
     this._pointLights = new Float32Array(0); // vec4 per light [x,y,z,range]
     this._flashLight = null;   // DS1: the storm's flash, composed in by setFlashLight
@@ -6667,6 +6671,33 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     this._frameStamp++;      // LA-COST1: and every frame block carries the lights
   }
 
+  /** PERF-FLICKER: are the point-light colours the ones the decode memo was built from? By VALUE, because a host hands
+   *  in a fresh array each frame - and the shared single colour too, which is the street's and the candle's case. */
+  _pointColorsMoved() {
+    const next = this._pointColors;
+    if (!next) {
+      // the shared single colour: a per-light list met last time must decode afresh when a list returns
+      this._pointColorsUp = null; this._pointColorsUpLen = -1;
+      const c = this._pointColor, was = this._pointColorUp;
+      if (!c) { this._pointColorUp = null; return !!was; }
+      const same = !!was && c[0] === was[0] && c[1] === was[1] && c[2] === was[2];
+      if (!same) this._pointColorUp = [c[0], c[1], c[2]];
+      return !same;
+    }
+    this._pointColorUp = null;   // per-light colours: the shared one's memo belongs to the other mode
+    let prev = this._pointColorsUp;
+    const len = next.length;
+    // PERF-FLICKER: the snapshot is sized for the lane's CAP, once - the dungeon's list is as long as the lights that
+    // happen to be lit, so sizing it to the list reallocated (and re-decoded) every time a lamp came into reach.
+    if (!prev || prev.length < len || prev.length < this.maxPointLights * 3) {
+      this._pointColorsUp = prev = new Float32Array(Math.max(len, this.maxPointLights * 3));
+      this._pointColorsUpLen = -1;   // a fresh buffer knows nothing
+    }
+    if (this._pointColorsUpLen !== len) { this._pointColorsUpLen = len; prev.set(next); return true; }
+    for (let i = 0; i < len; i++) if (next[i] !== prev[i]) { prev.set(next); return true; }
+    return false;
+  }
+
   /** DS1: THE LIGHTNING FLASH - Dynamic Skies' LightningFlash point light
    *  (a Unity point light over the player, colour x intensity, range
    *  500..1000, on for a fifth of a second). Takes {x, y, z, range,
@@ -6723,8 +6754,17 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
    *  the colours, so they need no word here. */
   _pointColorData(count, raw = false) {
     const lane = this._lane;
-    if (lane && !raw && this._pointColorDecGen === this._pointColorGen && this._pointColorDecLane === lane && this._pointColorDecCount >= count) {
+    const memo = !!lane && !raw && this._pointColorDecLane === lane && this._pointColorDecCount >= count;
+    if (memo && this._pointColorDecGen === this._pointColorGen) {
       return this._pointColorDec.subarray(0, count * 3);   // LA-COST1: the memo - decodeN's own view of the same buffer
+    }
+    // PERF-FLICKER (2026-10-20): A MOVED GENERATION IS NOT ALWAYS A MOVED COLOUR. A light flicker writes RANGES, and the
+    // dungeon's and the street's hosts hand the same colours in with them every frame - so the generation moved while
+    // the colours did not, and this decoded up to forty-eight lights (three Math.pow each) for numbers it already had.
+    // The values are compared before the decode is paid; the setters still move the generation, so the law above stands.
+    if (memo && this._pointColorDecBuf === this._pointColorDec && !this._pointColorsMoved()) {
+      this._pointColorDecGen = this._pointColorGen;
+      return this._pointColorDec.subarray(0, count * 3);
     }
     let out;
     if (this._pointColors) out = count * 3 < this._pointColors.length ? this._pointColors.subarray(0, count * 3) : this._pointColors;   // AUDIT-EL F3: cut to the program's slots
@@ -6736,8 +6776,10 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       out = s.subarray(0, count * 3);
     }
     if (!lane || raw) return out;   // EL1: `raw` for a classic-space program under the lane (the water)
+    if (!memo || this._pointColorDecBuf !== this._pointColorDec) this._pointColorsMoved();   // PERF-FLICKER: the copy follows the inputs this decode is built from (a first ask, a lane swap that replaced the buffer, a wider count)
     const dec = lane.decodeN(out, this._pointColorDec, count);   // EL1: linear for the lane
     this._pointColorDecGen = this._pointColorGen; this._pointColorDecLane = lane; this._pointColorDecCount = count;   // LA-COST1
+    this._pointColorDecBuf = this._pointColorDec;   // PERF-FLICKER: a lane swap may replace the buffer under a live memo
     return dec;
   }
 

@@ -160,8 +160,10 @@ PlayerAmbientLight exterior ambient = lerp(0.25 * NightAmbientLightScale
 (AUDIT 64 F8: the two call sites that name it, DaggerfallLocation.cs:141-145
 and DayNight.cs:90/:120, both read IsCityLightsOn - so the glass lights with
 the lanterns at 17:00 and unlights with them at 08:00); DaggerfallLight flicker per light (14
-ticks/s, target = rand(range - 1, range), step 0.4) on the approved
-umRandom substitute (Ledger A). Renderer: solid lighting parametrized
+ticks/s, target = rand(range - 1, range), step 0.4) on a fixed per-light table of the
+port's own numbers - a departure from DFU's Random.Range, named at src/world/worldClock.js's
+header: the band, the 0.4 step and the 14 ticks are verbatim, the sequence is still
+deterministic from a seed, and no RNG is called per light per tick. Renderer: solid lighting parametrized
 (uAmbient + uSunColor * uSunScale * N.L; defaults reproduce the pre-R5
 constants so interior/dungeon/terrain scenes are untouched);
 setLighting(ambient, sunScale, sunColor); nearestLights takes per-light

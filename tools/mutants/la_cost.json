@@ -149,8 +149,8 @@
  {
   "name": "LA-COST1-memo-blind-to-the-count",
   "file": "src/render/renderer.js",
-  "old": " && this._pointColorDecLane === lane && this._pointColorDecCount >= count) {",
-  "new": " && this._pointColorDecLane === lane) {",
+  "old": " && this._pointColorDecLane === lane && this._pointColorDecCount >= count;",
+  "new": " && this._pointColorDecLane === lane;",
   "tests": ["test/render/la_cost.test.js"]
  },
  {
