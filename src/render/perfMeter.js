@@ -98,7 +98,13 @@ export function perfZoneLine(zones, counts, clock = 'gpu') {
   const rows = [...zones.entries()].filter(([, ms]) => ms != null).sort((a, b) => b[1] - a[1]);
   if (!rows.length) return perfLine(null, counts);
   const total = rows.reduce((a, [, ms]) => a + ms, 0);
-  const parts = [`${clock} ${total.toFixed(2)}ms`, ...rows.map(([n, ms]) => `${n} ${ms.toFixed(2)}`), `draws ${counts?.draws ?? 0}`];
+  const parts = [`${clock} ${total.toFixed(2)}ms`, ...rows.map(([n, ms]) => `${n} ${ms.toFixed(2)}`)];
+  // THE ZONE LINE CARRIES THE COUNTS TOO (2026-10-19, from a dungeon profile that could not be read): this line printed
+  // the passes and a bare `draws N`, so a `?perf=zones` run - the only run that says WHICH pass - lost the census, the
+  // shadow's counters and the geometry's quads and triangles that the plain line carries. The two lines are one line's
+  // worth of numbers: the counts go on the end, exactly as perfLine spells them.
+  const counted = perfLine(null, counts).replace('[perf] gpu n/a | ', '');
+  if (counted) parts.push(counted);
   return `[perf] ${parts.join(' | ')}`;
 }
 
