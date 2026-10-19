@@ -77,7 +77,7 @@ export function perfLine(gpuMs, counts) {
     const s = c.sites;
     const named = (s.flat | 0) + (s.mesh | 0) + (s.terr | 0) + (s.water | 0) + (s.screen | 0) + (s.char | 0);
     const other = (c.draws | 0) - named;
-    parts.push(`sites flat ${s.flat | 0}d/${s.flatInst | 0}i/${s.flatKeys | 0}k/${s.flatOrigins | 0}o`, `mesh ${s.mesh | 0}`, `terr ${s.terr | 0}`, `water ${s.water | 0}`, `char ${s.char | 0}d/${s.charRanges | 0}r`, `screen ${s.screen | 0}`, `other ${other}`);
+    parts.push(`sites flat ${s.flat | 0}d/${s.flatKeys | 0}k/${s.flatOrigins | 0}o`, `mesh ${s.mesh | 0}`, `terr ${s.terr | 0}`, `water ${s.water | 0}`, `char ${s.char | 0}d/${s.charRanges | 0}r`, `screen ${s.screen | 0}`, `other ${other}`);
   }
   return `[perf] ${parts.join(' | ')}`;
 }

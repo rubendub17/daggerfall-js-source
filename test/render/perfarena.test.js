@@ -42,35 +42,19 @@ function modelGl() {
     drawElements: (_mode, count, _type, off) => {
       const v = cur(), ix = bufs.get(v.ebo);
       if (!v.attr[0] || !v.attr[1] || !ix) { draws.push({ prog, origin: null, size: null, tris: null }); return; }   // not a flat's draw
+      const idx = new Uint32Array(ix.buffer.slice(off, off + count * 4));
+      const tris = [];
+      for (const k of idx) {
+        const corner = [];
+        for (const a of [0, 1]) {
+          const p = v.attr[a], f = new Float32Array(bufs.get(p.buf).buffer.slice(k * p.stride + p.off, k * p.stride + p.off + p.size * 4));
+          corner.push(...f);
+        }
+        tris.push(corner);
+      }
       const u = uniforms.get(prog);
-      draws.push({ prog, origin: u?.get('uOrigin') ?? null, size: u?.get('uSize') ?? null, tris: trisOf(v, ix, off, count) });
+      draws.push({ prog, origin: u?.get('uOrigin') ?? null, size: u?.get('uSize') ?? null, tris });
     },
-    // BB-INSTANCED: one call, N places. The triangles are the range's - resolved once, as the GPU does - and each copy
-    // carries its own place from the instance attribute (location 5, divisor 1), which this GL reads like any other.
-    drawElementsInstanced: (_mode, count, _type, off, instances) => {
-      const v = cur(), ix = bufs.get(v.ebo);
-      if (!v.attr[0] || !v.attr[1] || !ix) { for (let i = 0; i < instances; i++) draws.push({ prog, origin: null, size: null, tris: null }); return; }
-      const u = uniforms.get(prog), tris = trisOf(v, ix, off, count);
-      const p5 = v.attr[5], ob = p5 ? bufs.get(p5.buf) : null;
-      for (let i = 0; i < instances; i++) {
-        const origin = p5 && ob ? Array.from(new Float32Array(ob.buffer.slice(i * 12, i * 12 + 12))) : (u?.get('uOrigin') ?? null);
-        draws.push({ prog, origin, size: u?.get('uSize') ?? null, tris });
-      }
-    },
-  };
-  /** The triangles a range rasterises: each index through the bound VAO to its corner's five floats. */
-  const trisOf = (v, ix, off, count) => {
-    const idx = new Uint32Array(ix.buffer.slice(off, off + count * 4));
-    const tris = [];
-    for (const k of idx) {
-      const corner = [];
-      for (const a of [0, 1]) {
-        const p = v.attr[a], f = new Float32Array(bufs.get(p.buf).buffer.slice(k * p.stride + p.off, k * p.stride + p.off + p.size * 4));
-        corner.push(...f);
-      }
-      tris.push(corner);
-    }
-    return tris;
   };
   const gl = new Proxy({}, {
     get(_, k) {

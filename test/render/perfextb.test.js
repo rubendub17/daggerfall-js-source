@@ -54,7 +54,7 @@ function mintedFields() {
   const at = r.indexOf('createBillboardBatch(archive, record, size, centers');
   assert.ok(at > 0, 'the factory is where this pin thinks');
   const mint = r.slice(at);
-  const lit = mint.slice(mint.indexOf('const batch = {'), mint.indexOf('\n  }'));   // BB-INSTANCED: the literal is named now - it is returned once its shared range holds it
+  const lit = mint.slice(mint.indexOf('return {'), mint.indexOf('\n  }'));
   return new Set(lit.slice(lit.indexOf('{') + 1, lit.lastIndexOf('}'))
     .split(/,(?![^[\]]*\])/).map((part) => /^\s*(\w+)/.exec(part)?.[1]).filter(Boolean));
 }
@@ -231,62 +231,26 @@ test('PERF-EXT10 (the review): the shadow record writes every batch\'s fractiona
  *  uSize and uOrigin must be the drawn batch's own. Returns how many draws it checked. */
 function assertEveryFlatDrawSeesItsOwn(calls, programs, batches) {
   // PIN MOVED (PERF-ARENA): a still batch draws a RANGE of its arena's indices - the draw is named by the VAO and the
-  // offset together (many batches share one VAO now).
-  // PIN MOVED (BB-INSTANCED): and a range can be stood by MANY batches, each with its own PLACE - a per-copy attribute for
-  // the run's copies, and the plain uniform for a draw of one. So this walk resolves WHERE each draw landed, the way the
-  // GPU does: uOrigin, plus the copy's place when the places' attribute is enabled for the draw. A draw that lands
-  // anywhere but on a flat of its own range is the bug - including a run of one that wears the last run's first place,
-  // which is what an attribute left enabled on the array would do.
-  const round = (a) => [Number(a[0]).toFixed(6), Number(a[1]).toFixed(6), Number(a[2]).toFixed(6)].join(',');
-  const groupKey = (b) => `${b.vao?.id ?? b.vao}|${b._ibOff | 0}`;
-  const left = new Map(), all = new Map();
-  for (const b of batches) {
-    if (!left.has(groupKey(b))) { left.set(groupKey(b), []); all.set(groupKey(b), []); }
-    left.get(groupKey(b)).push(b);
-    all.get(groupKey(b)).push(b);
-  }
-  const take = (key, place) => {
-    const g = left.get(key);
-    if (!g) return null;
-    const at = g.findIndex((b) => round(b.origin || [0, 0, 0]) === place);
-    return at < 0 ? null : g.splice(at, 1)[0];
-  };
-  // a window that includes the shadow replay (which draws the same ranges again) cannot consume: ask only whether the
-  // place belongs to the range at all. Several batches of a pixel can stand the SAME place, so a set says that.
-  const at4 = (key, place, size) => (all.get(key) ?? []).find((b) => round(b.origin || [0, 0, 0]) === place && (!size || (b.size.w === size[0] && b.size.h === size[1]))) ?? null;
+  // offset together (many batches share one VAO now)
+  const byVao = new Map();
+  for (const b of batches) { if (!byVao.has(b.vao)) byVao.set(b.vao, new Map()); byVao.get(b.vao).set(b._ibOff | 0, b); }
   const held = new Map();
-  let cur = null, vao = null, checked = 0, places = null, placesOn = false;
+  let cur = null, vao = null, checked = 0;
   const bad = [];
   for (const c of calls) {
     if (c[0] === 'useProgram') { cur = c[1]; if (!held.has(cur)) held.set(cur, new Map()); }
     else if (c[0] === 'uniform2f' || c[0] === 'uniform3f') held.get(cur)?.set(c[1], c.slice(2));
     else if (c[0] === 'bindVertexArray') vao = c[1];
-    else if (c[0] === 'bufferSubData') places = Array.from(c[3] ?? []).slice(c[4] ?? 0, (c[4] ?? 0) + (c[5] ?? 0));
-    else if (c[0] === 'enableVertexAttribArray' && c[1] === 5) placesOn = true;
-    else if (c[0] === 'disableVertexAttribArray' && c[1] === 5) placesOn = false;
-    else if (c[0] === 'drawElements' && programs.includes(cur)) {
-      const key = `${vao?.id ?? vao}|${c[4] | 0}`, u = held.get(cur), size = u.get('uSize'), o = u.get('uOrigin') ?? [0, 0, 0];
-      if (!left.has(key)) continue;   // another pass's draw on another array
-      // a non-instanced draw is instance 0: it wears the places' first copy only if that attribute is enabled for it
-      const place = round([o[0] + (placesOn && places ? places[0] : 0), o[1] + (placesOn && places ? places[1] : 0), o[2] + (placesOn && places ? places[2] : 0)]);
-      const b = take(key, place) ?? at4(key, place, size);
-      if (!b) { bad.push(`a draw at ${c[4]} landed at ${place}, which is no flat of its range`); continue; }
+    else if (c[0] === 'drawElements' && programs.includes(cur) && byVao.get(vao)?.has(c[4] | 0)) {
+      const b = byVao.get(vao).get(c[4] | 0), u = held.get(cur), o = b.origin || [0, 0, 0];
       checked++;
+      const size = u.get('uSize'), origin = u.get('uOrigin');
       if (!size || size[0] !== b.size.w || size[1] !== b.size.h) bad.push(`${b.archive}_${b.record}: drew with uSize ${size} for ${b.size.w},${b.size.h}`);
-    } else if (c[0] === 'drawElementsInstanced' && programs.includes(cur)) {
-      const key = `${vao?.id ?? vao}|${c[4] | 0}`, u = held.get(cur), size = u.get('uSize'), n = c[5] | 0;
-      if (!left.has(key)) continue;
-      for (let i = 0; i < n; i++) {
-        const pl = round([places?.[i * 3], places?.[i * 3 + 1], places?.[i * 3 + 2]]);
-        const b = take(key, pl) ?? at4(key, pl, size);
-        if (!b) { bad.push(`a copy at ${c[4]} landed at ${places?.[i * 3]}, which is no flat of its range`); break; }
-        checked++;
-        if (!size || size[0] !== b.size.w || size[1] !== b.size.h) bad.push(`${b.archive}_${b.record}: a copy drew with uSize ${size} for ${b.size.w},${b.size.h}`);
-      }
+      if (!origin || origin[0] !== o[0] || origin[1] !== o[1] || origin[2] !== o[2]) bad.push(`${b.archive}_${b.record}: drew with uOrigin ${origin} for ${[...o]}`);
     }
   }
   assert.deepEqual(bad, [], 'a flat drew with another flat\'s size or origin');
-  return checked;   // the caller's own window decides how many that should be (the replay draws the same ranges again)
+  return checked;
 }
 
 /** A town's flats in the world.js shape: five pixels, one origin ARRAY a pixel, shared by its four batches. Pixel 3
@@ -315,13 +279,8 @@ test('PERF-EXT11: the main pass uploads a flat\'s size when it changes and its o
   r.drawBillboards(batches, RIGHT, UP);
   const n = (name, loc) => calls.filter((c) => c[0] === name && c[1] === loc).length;
   assert.equal(n('uniform2f', 'uSize'), 1, 'one record, one size');
-  // BB-INSTANCED: the twenty copies of the one picture are ONE run - its places ride the instance attribute, so the
-  // uniform is zeroed once and the frame is one call. What this pin is for is unchanged: every copy wears ITS own place
-  // and ITS size, which assertEveryFlatDrawSeesItsOwn reads back out of the attribute upload.
-  assert.equal(n('uniform3f', 'uOrigin'), 1, 'the run carries the places; uOrigin goes to zero, once');
-  const runs = calls.filter((c) => c[0] === 'drawElementsInstanced');
-  assert.equal(runs.length, 1, 'one call for the twenty copies');
-  assert.equal(runs[0][5], 20, 'and its instance count is the twenty');
+  assert.equal(n('uniform3f', 'uOrigin'), 5, 'five pixels, five origins');
+  assert.equal(calls.filter((c) => c[0] === 'drawElements').length, 20, 'every flat still drawn');
   assert.equal(assertEveryFlatDrawSeesItsOwn(calls, [r.bbProgram], batches), 20);
 });
 

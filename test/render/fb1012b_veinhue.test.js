@@ -106,7 +106,7 @@ test('VEIN-HUE the dye rides with the wash on the billboard pass: a dyed batch s
     r.drawBillboards([moon, banner], R, UP);
     const dyes = calls.filter((c) => c[0] === 'uniform1f' && c[1] === 'uBatchDye').map((c) => c[2]);
     assert.equal(dyes[0], 0, `${lane ? 'EL' : 'classic'}: the frame starts undyed`);
-    const seq = calls.filter((c) => (c[0] === 'uniform1f' && c[1] === 'uBatchDye') || c[0] === 'drawElements' || c[0] === 'drawElementsInstanced').map((c) => (c[0] === 'drawElements' || c[0] === 'drawElementsInstanced' ? 'draw' : c[2]));
+    const seq = calls.filter((c) => (c[0] === 'uniform1f' && c[1] === 'uBatchDye') || c[0] === 'drawElements').map((c) => (c[0] === 'drawElements' ? 'draw' : c[2]));
     const under = [];   // the dye in force at each draw
     let cur;
     for (const x of seq) if (x === 'draw') under.push(cur); else cur = x;

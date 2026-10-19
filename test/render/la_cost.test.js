@@ -85,7 +85,7 @@ function stateGl() {
         case 'useProgram': return (p) => { cur = p; };
         case 'activeTexture': return (u) => { active = u; };
         case 'bindTexture': return (target, tex) => { if (!units.has(active)) units.set(active, new Map()); units.get(active).set(target, tex); };
-        case 'drawElements': case 'drawArrays': case 'drawElementsInstanced': return () => snap();   // BB-INSTANCED: a run is a draw too
+        case 'drawElements': case 'drawArrays': return () => snap();
         default:
           if (typeof k !== 'string') return undefined;
           if (k.startsWith('create')) return () => ({ id: ++ids, u: new Map() });
@@ -486,7 +486,7 @@ test('LA-COST2: THE CUTOUT PASS SORTS BY BUCKET, IN THE STRING SORT\'S OWN ORDER
   r.drawBillboards(made, R, UP);
   const bound = calls.filter((x) => x[0] === 'bindTexture' && typeof x[2]?.id === 'string').map((x) => x[2].id);
   assert.deepEqual(bound, ['182_2', '380_0', '504_10', '504_9'], 'one bind a key, in the string sort\'s order (\'504_10\' before \'504_9\')');
-  assert.equal(calls.filter((x) => x[0] === 'drawElements' || x[0] === 'drawElementsInstanced').length, 6, 'every batch drawn (BB-INSTANCED: each of these is its own picture, so each is a draw still)');
+  assert.equal(calls.filter((x) => x[0] === 'drawElements').length, 6, 'every batch drawn');
 });
 
 test('LA-COST3: THE FLAT\'S SUN IS READ ONCE A QUAD - the lane\'s billboard vertex shader is BB_VS whole with the lane\'s additions (the head before main, the read after every line that places the corner), and run through the GLSL evaluator it hands all four corners of a quad the value the fragment read took at the flat\'s base - sunShadowSoftAt(vBBBase + (0, 0.5, 0), up), to the bit in fp32 - lit, shadowed and in a penumbra, still or leaning in the wind; at night it reads no tap; the classic set and the shadow and air passes keep BB_VS, and the lane\'s program is built from the composed text (mutants: the read at the corner, not the base; the cheap tap; the night gate gone)', () => {
