@@ -445,5 +445,44 @@ crowd): street 14 fps 1% low, 1318 draws; crowd 14 fps 1% low, 1364 draws; strea
 draws. The score is the harmonic mean of the legs' 1% lows, so a heavy town leg drags it - which is
 the number a player feels, and the reason the instrument exists.
 
+## The third WATCH: things a person sees that a number does not (2026-10-20)
+
+Four reports, and every one of them was right:
+
+- **"THE STREAM DIDN'T DO NOTHING."** It built the pixel next door - regularly open wild - and left the
+  camera where it stood, so the window showed a town the viewer already knew. The destination is now
+  the engine's own answer to *somewhere else*: `__travelNearest` (the probe behind the travel map's
+  search) names a DISCOVERED place at least two map pixels away, the pixel builder builds it, and once
+  it has settled the body is STOOD IN IT through the host's own warp - so the leg is an arrival, the
+  arrival is watched for `STREAM_LAND_MS`, and the stream that follows is measured.
+- **"IN THE BLADE COMBAT THE GUY IS HAND TO HAND."** The pins mint a Nord Warrior whose kit is not a
+  swung weapon, and the leg was measuring a fist. `armGear('blade')` now takes a longsword from the
+  Test Room's own rows - the table the bow already comes from, so there is still one item list.
+- **"IN THE MAGE PUT A TIMEOUT BETWEEN SPELLS, IT'S SPAMMING TOO MUCH."** Right: the cadence was the
+  melee's 700 ms, and a caster's is not a fighter's - a cast costs mana and its ready must be made
+  again between casts. `SPELL_EVERY_MS` is 1.5 s now, so the leg reads as a caster and not as a
+  machine gun. (The press has to stay HELD while the swing is: an edge-only press was tried and took
+  both ranged legs down - the arrow never loosed and the cast never fired.)
+- **"THE GUY ISN'T GOING THROUGH THE DUNGEON... YOU NEED TO NAVIGATE, WALK, GO INTO ROOMS, TURN
+  AROUND."** Three causes. The card sat DEAD CENTRE over a dimmed page and hid the very corridor it
+  was measuring - it is now a compact panel in the bottom-left corner with no page dimmer. The walker
+  wore whatever pitch the last fight aimed with, so it walked the dungeon staring at the ceiling - a
+  walker now looks level, along its route (`deps.level`). And the walk itself: a destination is now
+  remembered (`WALK_VISITED_M`) so the leg crosses room after room instead of re-planning to the foe
+  it just left, waypoints are reached at 0.6 m (the dungeon's own foe AI uses 0.45 m; 1.2 m cut
+  corridor corners and walked into the walls it cut), the metres covered are printed on the card, and
+  a body that stops moving for `WALK_STUCK_MS` abandons the route and plans again. A FIGHT leg now
+  walks to its foe on the same mesh when the foe is out of reach, instead of being warped into a
+  frozen stand ("in fighting scene char cant move place").
+- **AND THE DUNGEON IS LIT.** A dungeon is dark until somebody lights something - that is the game -
+  but a run nobody can see is not one the owner can judge, so the run presses the player's own
+  Light-or-douse binding once at its start (`TorchToggleLight`), and a body carrying no light is
+  unaffected.
+
+The archer also keeps its range now (`BOW_STANDOFF_M` 8 m): a bow spawns its shaft at the bow, so a
+blade's 1.6 m gave the arrow no room to become one - that is why the bow leg took nothing off the
+foes' health while the mage's did.
+
+
 
 

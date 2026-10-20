@@ -158,7 +158,7 @@ test('BENCH1 host: the stream leg waits for the journey to START, holds a window
   const refused = fakeWorld({ params: new URLSearchParams('bench=stream'), settle: () => true, travel: () => false });
   refused.play(2);
   assert.equal(refused.host.surface.state, 'failed');
-  assert.match(refused.host.surface.report.failures[0], /the map could not open a journey/);
+  assert.match(refused.host.surface.report.failures[0], /the world could not open a journey/);
 });
 
 test('BENCH1 host: a character-creation screen is not a scene - the run WAITS for the body, then refuses to film a wizard', () => {

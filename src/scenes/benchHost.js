@@ -47,6 +47,17 @@ export const SWING_EVERY_MS = 700;
 /** How long a BOW is held before it looses, milliseconds - a draw is not a swing, and a release at a
  *  fifth of the draw tests the cancel rather than the arrow. */
 export const BOW_DRAW_MS = 900;
+/** How far a bow leg stands from its foe, metres. A bow is a RANGED weapon and it spawns its shaft
+ *  at the bow: stood at a blade's 1.6 m the arrow has no room to become an arrow, which is why the
+ *  bow leg took nothing off the foes' health while the mage's (a missile from the eye) did. Eight
+ *  metres is inside the bow's own reach and outside its own model. */
+export const BOW_STANDOFF_M = 8;
+/** How long a CAST is held, and how often the next begins, milliseconds. A spell is slower than a
+ *  swing on purpose: the owner watched the mage leg and said "in the mage put a timeout between
+ *  spells, it's spamming too much" - a cast costs mana and the ready must be re-made between casts,
+ *  so one and a half seconds is the rhythm a caster actually fights at. */
+export const SPELL_HOLD_MS = 400;
+export const SPELL_EVERY_MS = 1500;
 /** How fast the crowd leg turns the view, radians a second - a look around, not a spin. */
 export const SWEEP_RAD_S = 0.35;
 /** How near a foe is the one being fought, metres - the classic spawn band's horizontal reach, so
@@ -74,6 +85,17 @@ export const DRAW_AGAIN_MS = 400;
  *  milliseconds - a worker bake of a large collider takes seconds; a page whose AI never bakes must
  *  cost one leg's wait, not a run's. */
 export const MESH_WAIT_MS = 30000;
+/** How near a destination already walked to is the SAME destination, metres - the leg's memory of
+ *  where it has been, so a dungeon is crossed room by room instead of walked to the same foe twice. */
+export const WALK_VISITED_M = 8;
+/** How long a walk may make no progress before it is pinned rather than walking, milliseconds. */
+export const WALK_STUCK_MS = 2500;
+/** What counts as progress, metres a frame - under it the body is against something. */
+export const WALK_MOVED_M = 0.02;
+/** How near a waypoint counts as reached while WALKING a dungeon route, metres. The dungeon's own foe
+ *  AI reaches its waypoints at 0.45 m; a looser 1.2 m cuts the corner of a corridor and walks the body
+ *  into the wall it cut. */
+export const WALK_WAYPOINT_M = 0.6;
 /** The legs that are FIGHTS: the blade, the bow and the spell. Each is stood in its ring before the
  *  warmup, and each proves at its end that its own blows took something off the foes' health. */
 export const FIGHT_IDS = Object.freeze(['blade', 'bow', 'spell']);
@@ -127,9 +149,23 @@ export function createWorldBench(host) {
   };
   /** ONE PIXEL NEXT DOOR, built by the streaming host's own builder - the stream leg's subject. */
   const journeyFn = () => {
-    const px = w?.travelPixel ? w.travelPixel() : null;
+    // A PLACE THAT IS ACTUALLY AWAY FROM HERE. The first cut built the pixel NEXT DOOR, and a person
+    // watching said what they saw: "the stream didn't do nothing" - the neighbour is regularly open
+    // wild, so the leg measured one thin pixel and the window showed a field. The destination is the
+    // engine's own answer to "somewhere else": `__travelNearest`, the probe behind the travel map's
+    // search, which answers a DISCOVERED location at least two map pixels away. Far enough that
+    // arriving is an arrival, and the same place every run, because discovery is the save's and not
+    // the dice's. A page with no map to ask falls back to the neighbour it always had.
+    const here = w?.travelPixel ? w.travelPixel() : null;
+    let px = null;
+    try {
+      const said = globalThis.window?.__travelNearest?.();
+      const far = typeof said === 'string' ? JSON.parse(said) : said;
+      if (far?.pixel && Number.isFinite(far.pixel.x) && Number.isFinite(far.pixel.y)) px = far.pixel;
+    } catch { px = null; }
+    if (!px && here) px = { x: here.x + 1, y: here.y };
     if (!px || !w?.build) return false;
-    try { w.build(px.x + 1, px.y); } catch { return false; }
+    try { w.build(px.x, px.y); } catch { return false; }
     return true;
   };
   /**
@@ -305,6 +341,17 @@ export function createDungeonBench(host) {
     const body = host.entity?.();
     spellFor = null;
     if (!body) return;
+    if (id === 'blade') {
+      // A BLADE IN THE HAND, NOT THE FIST. The pins mint a Nord Warrior whose chargen kit is not a
+      // swung weapon, and the blade leg was measured over a body punching the air (the owner: "in
+      // the blade combat the guy is hand to hand"). The Test Room's own rows arm every weapon type
+      // once in steel, so the leg takes its longsword from there - the same table the bow comes
+      // from, and no second item list.
+      const rows = testGearRows(body.gender);
+      const sword = rows.find((r) => r.kind === 'weapon' && /longsword/i.test(String(r.label ?? '')))
+        ?? rows.find((r) => r.kind === 'weapon' && /sword|saber|katana|axe|mace|warhammer/i.test(String(r.label ?? '')));
+      if (sword && host.equip) host.equip(testItemOf(sword));
+    }
     if (id === 'bow') {
       // A BOW WITHOUT A QUIVER TESTS THE REFUSAL, NOT THE WEAPON - the Test Room's own note on its
       // rows. The quiver is a row of its own there, so it is taken here too, or the leg measures a
@@ -381,14 +428,30 @@ export function createDungeonBench(host) {
     }, READY_HOLD_MS);
   };
 
+  /** LIGHT THE DUNGEON, ONCE. A dungeon is dark until somebody lights something - that is the
+   *  game, not a benchmark bug - and a run nobody can see is not a run the owner can judge (the second
+   *  watch: "the guy isn't going through the dungeon", over a screen the torches could not reach). So
+   *  the run presses the player's OWN Light-or-douse binding once, before the first leg. A body
+   *  carrying no light is unaffected: the press lands on the empty slot and the dungeon stays as dark
+   *  as the character found it. */
+  let lit = false;
+  const lightUp = () => {
+    if (lit) return;
+    lit = true;
+    let code = null;
+    try { code = host.codeForAction?.(host.bindings?.(), 'TorchToggleLight') ?? null; } catch { code = null; }
+    if (!code) return;
+    hostSyntheticKey('keydown', code);
+    globalThis.setTimeout?.(() => hostSyntheticKey('keyup', code), READY_HOLD_MS);
+  };
   /** Stand the body in the fight: on the line between it and the nearest live foe, at striking
    *  distance. Answers whether it moved - a page that offers no warp keeps the body where it is and
    *  the fight leg says so by name. */
-  const standInTheFight = () => {
+  const standInTheFight = (id) => {
     const at = host.feet?.() ?? null;
     const foe = nearestFoe(host.foes?.() ?? [], at, Number.POSITIVE_INFINITY);
     if (!at || !foe) return false;
-    const spot = standoffSpot(foe, at);
+    const spot = standoffSpot(foe, at, id === 'bow' ? BOW_STANDOFF_M : undefined);
     if (!spot) return false;
     return host.warp?.(spot) !== false;
   };
@@ -417,6 +480,7 @@ export function createDungeonBench(host) {
     settleCeilingMs: MESH_WAIT_MS,
     census: (key) => (key === 'foes' ? (host.foes?.()?.length ?? 0) : null),
     prepareLeg: (id) => {
+      lightUp();   // a dungeon nobody can see is a run nobody can judge
       walkNext = id === 'dungeon';
       armGear(id);
       forgetTheDraw();   // this leg's weapon was just put away by its own equip: draw it again
@@ -431,13 +495,14 @@ export function createDungeonBench(host) {
       // spell and sheathes the weapon in the same press: the Ready Weapon key on a spell leg would
       // take the leg's spell away from it.
       if (id !== 'spell') drawWeapon();
-      standInTheFight();
+      standInTheFight(id);
     },
     foes: () => host.foes?.() ?? [],
     foeHealth: () => foeHealthTotal(host.foes?.() ?? []),
     rearm,   // BENCH1: the spell leg's ready, made again before each blow (a cast spends it)
     attack: host.attack ?? null,
     aimAt: host.aimAt ?? null,
+    level: host.level ?? null,   // BENCH1: a walker's eye, level - a corridor is not a ceiling
     drawn: host.drawn ?? null,
     ready: host.ready ?? null,
     readied: host.readied ?? null,
@@ -457,6 +522,10 @@ export const SETTLE_CEILING_MS = 180000;
  *  journey that never left is immediately true, and the first real run's stream leg lasted three
  *  frames: a second and a half nobody could see, reported as a 7 fps leg. */
 export const STREAM_MIN_MS = 8000;
+/** How long the ARRIVAL is watched after the body is stood in the new place, milliseconds - the leg's
+ *  whole subject is the hitch of arriving, and an arrival nobody sees is not what a person means by
+ *  "the stream did nothing". */
+export const STREAM_LAND_MS = 6000;
 
 /** Seconds to milliseconds, the law's own unit into the frame's. */
 const toMs = (s) => Math.max(0, Number(s) || 0) * 1000;
@@ -518,10 +587,18 @@ export function createBenchHost(deps) {
   let stamps = [];
   let cursor = 0;               // the walk's waypoint cursor
   let swingAt = 0;              // when the next swing begins
+  let arrivedAt = null;         // the stream leg's arrival: when the body was stood in the new place
   let sawBusy = false;         // the stream leg's witness: the journey actually started
   let runRoute = null;          // the street leg's route, planned once off the town's own grid
   let walk = null;              // the dungeon leg's route: the engine's own plan, followed waypoint by waypoint
   let walkCursor = 0;           // and how far along it the body has walked
+  const walkSeen = [];          // the destinations this leg has been to - it does not go back to them
+  let fightWalk = null;         // a fight leg's route to a foe out of reach - the same mesh the walk uses
+  let fightCursor = 0;          // and how far along it the body has got
+  let walkStill = 0;            // when the body last made progress, for the stuck watch
+  let walkLast = null;          // the last feet read, for the metres and the watch
+  let walkedM = 0;              // the metres the leg's body actually covered
+  let walkedStuck = 0;          // how many times it abandoned a route and planned again
   let damageAt = null;          // a fight leg's foe health when it began, for the damage proof at its end
   let report = null;
   let bot = null;
@@ -631,6 +708,13 @@ export function createBenchHost(deps) {
     swingAt = 0;
     walk = null;
     walkCursor = 0;
+    // THE WALK'S OWN MEMORY IS PER LEG: the destinations visited, the metres covered and the times
+    // a route was abandoned belong to the leg they were measured in, or a second leg's card would
+    // report the first leg's walk.
+    walkSeen.length = 0;
+    walkLast = null;
+    walkedM = 0;
+    walkedStuck = 0;
     stopHands();
     // any window the game raised between legs - the opening quest box, a tutorial page, a
     // level-up - holds the motor, and a leg under a modal measures a paused game
@@ -696,6 +780,14 @@ export function createBenchHost(deps) {
       entry.damage = dealt;
       if (dealt !== null) entry.notes.push(`${dealt} point(s) of foe health taken by the leg's own blows`);
       if (dealt === 0) failures.push(`${leg.title}: the leg swung and no blow landed - nothing was taken off the foes' health, so this measured a body flailing, not combat`);
+    }
+    if (leg.id === 'dungeon') {
+      // THE WALK'S OWN PROOF: the metres the body covered, and how often it had to abandon a route.
+      // Zero metres over the whole leg is a body standing in a wall, whatever the frame rate says.
+      entry.walked = Math.round(walkedM * 10) / 10;
+      if (walkedStuck) entry.notes.push(`${walkedStuck} route(s) abandoned as pinned`);
+      if (walkedM > 0) entry.notes.push(`the body covered ${entry.walked} m`);
+      if (!(walkedM > 0)) failures.push(`${leg.title}: the walk covered no ground - the body never left where it stood`);
     }
     if (!s.frames) failures.push(`${leg.title}: no frame was measured - the leg held ${stamps.length} stamp(s)`);
     if (!judged.ok) failures.push(`${leg.title}: ${judged.why}`);
@@ -775,21 +867,31 @@ export function createBenchHost(deps) {
       return null;
     }
     if (leg.id === 'dungeon') {
-      // THE DUNGEON WALKED, ON THE DUNGEON'S OWN MESH. A corridor is not a straight line: the first
-      // real run held forward and walked into the first wall it met, and reported the wall's frame
-      // rate as the dungeon's. So the walk is a ROUTE - the engine's own `findPath` over the same
-      // navmesh the foes path on (`deps.plan`), taken to a destination that is actually reachable,
-      // and followed waypoint by waypoint. When the route runs out the leg plans the next one from
-      // where the body stands, so the leg walks as long as it lasts.
+      // THE DUNGEON WALKED, ROOM TO ROOM, ON THE DUNGEON'S OWN MESH. A corridor is not a straight
+      // line: the first real run held forward and walked into the first wall it met, and reported the
+      // wall's frame rate as the dungeon's. So the walk is a ROUTE - the engine's own `findPath` over
+      // the same navmesh the foes path on (`deps.plan`) - taken to a destination that is actually
+      // reachable and followed waypoint by waypoint. The route turns where the corridor turns, because
+      // the mesh's own funnel does.
+      //
+      // AND THE WALK KEEPS GOING SOMEWHERE NEW. The second watch: "in the dungeon the guy isn't going
+      // through the dungeon... navigate, walk, go into rooms, turn around". Two causes, both fixed
+      // here: the destinations were every foe sorted by distance with no memory, so a plan that ended
+      // where the body had just come from was taken again; and a body the collider pinned (a door
+      // jamb, a stair nose) re-planned to the same place for ever. Now a destination is remembered
+      // (`WALK_VISITED_M`), the furthest one not yet visited wins, and a body that stops moving
+      // re-plans at once.
       if (!walk) {
         const plan = deps.plan ?? null;
         if (!plan) return 'this page offers no dungeon route (its host wired no navmesh plan), so the walk has nowhere to be planned';
-        // FURTHEST FIRST: a walk that ends two metres away is not a walk. The destination is a live
-        // foe - the only guaranteed-connected point in a dungeon - and the plan is what proves it.
-        const goals = (deps.foes?.() ?? [])
+        const fresh = (deps.foes?.() ?? [])
           .map((f) => foeFeet(f))
           .filter(Boolean)
+          .filter((g) => walkSeen.every((v) => distanceTo(v, g) > WALK_VISITED_M))
           .sort((a, c) => distanceTo(at, c) - distanceTo(at, a));
+        // every foe already visited: forget the memory rather than stand still, and walk again
+        const goals = fresh.length ? fresh : (deps.foes?.() ?? []).map((f) => foeFeet(f)).filter(Boolean);
+        if (!fresh.length) walkSeen.length = 0;
         try { walk = pickWalk({ plan, from: [...at], goals }); } catch (err) {
           return `the dungeon's own path query refused to answer (${err?.message ?? err}) - nothing to walk on`;
         }
@@ -802,12 +904,34 @@ export function createBenchHost(deps) {
             ? `the dungeon offered no route to walk (${goals.length} destination(s) tried) - the navmesh its foes path over does not reach this body's floor`
             : 'the dungeon\'s navmesh never landed (no foe AI answered one), so the walk had no floor to be planned on';
         }
+        if (walk.goal) walkSeen.push(walk.goal);
         walkCursor = 0;
+        walkStill = at;
+        walkLast = [...at];
       }
-      const step = advancePath(walk.points, walkCursor, at);
+      // A TIGHT WAYPOINT, as the dungeon's own foe AI follows its route (`WP_REACH` 0.45 m there): a
+      // loose one cuts the corner of a corridor and walks the body into the wall it cut.
+      const step = advancePath(walk.points, walkCursor, at, WALK_WAYPOINT_M);
       walkCursor = step.index;
-      if (step.done) walk = null;   // the route is behind us: plan the next one from here
-      else if (step.target) b.steer({ at, heading: h, target: step.target, dt });
+      // THE METRES THE BODY ACTUALLY COVERED - the reading that says the walk went somewhere instead
+      // of turning on the spot, and the number the leg's notes carry.
+      const movedNow = walkLast ? distanceTo(walkLast, at) : 0;
+      if (movedNow < 3) walkedM += movedNow;   // (a jump is a warp, not a step: it is not counted)
+      walkLast = [...at];
+      // STUCK WATCH: a body that has not moved in WALK_STUCK_MS is pinned - a door jamb, a stair
+      // nose, a crate - not walking. Plan again from here rather than spend the leg against it.
+      if (movedNow > WALK_MOVED_M) walkStill = at;
+      if (at - walkStill > WALK_STUCK_MS) {
+        walkedStuck++;
+        walk = null;
+        walkStill = at;
+        return null;
+      }
+      if (step.done) { walk = null; return null; }   // the route is behind us: plan the next one
+      if (step.target) b.steer({ at, heading: h, target: step.target, dt });
+      // A WALKER LOOKS WHERE IT IS GOING. Whatever pitch the last fight aimed with is not a corridor's
+      // - the owner watching the dungeon leg: "also stop looking up".
+      try { deps.level?.(); } catch { /* a host with no level look */ }
       return null;
     }
     if (leg.id === 'crowd') {
@@ -853,12 +977,40 @@ export function createBenchHost(deps) {
       const delta = turnTo(aimYaw(at, feet), h);
       if (Math.abs(delta) > 0.1) deps.turnBy?.(Math.max(-0.12, Math.min(0.12, delta)));
     }
-    // inside the weapon's reach the body stops and swings; outside it, it closes the distance first
-    if (dist > FIGHT_CLOSE_M) b.steer({ at, heading: h, target: feet, dt });
-    else b.steer({ at, heading: h, target: [at[0], at[1], at[2]], dt });
+    // INSIDE THE WEAPON'S REACH IT STANDS AND SWINGS; OUTSIDE IT WALKS THERE, on the dungeon's own
+    // navmesh - a body that stops because the leg warped it into place reads as frozen (the owner,
+    // watching: "in fighting scene char cant move place"). The route is the engine's own path to the
+    // foe, followed waypoint by waypoint exactly as the walk leg follows its own.
+    const closeTo = leg.id === 'bow' ? BOW_STANDOFF_M : FIGHT_CLOSE_M;   // an archer holds its range
+    if (dist > closeTo) {
+      if (!fightWalk && typeof deps.plan === 'function') {
+        try { fightWalk = pickWalk({ plan: deps.plan, from: [...at], goals: [feet], maxGoals: 1 }); } catch { fightWalk = null; }
+        fightCursor = 0;
+      }
+      if (fightWalk) {
+        const step = advancePath(fightWalk.points, fightCursor, at);
+        fightCursor = step.index;
+        if (step.done) fightWalk = null;
+        else if (step.target) b.steer({ at, heading: h, target: step.target, dt });
+      } else {
+        b.steer({ at, heading: h, target: feet, dt });   // no mesh to ask: the straight line it had
+      }
+      // ON THE WAY TO THE FOE IT LOOKS AHEAD, LEVEL - the aim below is for a foe already in reach, and
+      // a body walking a corridor with its eye on a ceiling is what the owner saw.
+      try { deps.level?.(); } catch { /* a host with no level look */ }
+    } else {
+      fightWalk = null;
+      b.steer({ at, heading: h, target: [at[0], at[1], at[2]], dt });
+    }
     b.tick(clock());
-    const hold = leg.id === 'bow' ? BOW_DRAW_MS : SWING_MS;
-    const every = hold + (leg.id === 'bow' ? 300 : SWING_EVERY_MS - SWING_MS);
+    // THE CADENCE IS A CADENCE, AND THE SPELL'S IS SLOWER. A bow's draw is longer than a swing; a
+    // caster's is slower again, because a cast costs mana and the ready has to be re-made before the
+    // next one - the owner, watching: "in the mage put a timeout between spells, it's spamming too
+    // much". One rhythm per weapon, named here rather than tuned in three places.
+    const hold = leg.id === 'bow' ? BOW_DRAW_MS : leg.id === 'spell' ? SPELL_HOLD_MS : SWING_MS;
+    const every = leg.id === 'bow' ? hold + 300
+      : leg.id === 'spell' ? SPELL_EVERY_MS
+        : hold + (SWING_EVERY_MS - SWING_MS);
     // EACH BLOW IS ARMED BEFORE IT IS PRESSED. A readied spell is SPENT by its cast, so a leg that
     // readied one spell at its start threw one spell and then fought with an empty hand for the rest
     // of its twenty seconds - one whiffed cast and the leg proves nothing. The host owns what
@@ -869,8 +1021,13 @@ export function createBenchHost(deps) {
       b.startSwing(clock(), hold);
       swingAt = clock() + every;
     }
-    // the press is HELD while the bot holds the swing and released when it lets go: the bow needs
-    // the release to fire, and every weapon needs the held state the mouse would give it
+    // THE DOOR IS HELD FOR AS LONG AS THE SWING IS, and it has to be: a drawn bow needs the button
+    // still down to reach its release, and the cast engine arms a click and fires it on a LATER frame
+    // (`interceptAttack` sets a pending cast; `firePending` casts it). An EDGE alone - one press, one
+    // release - was tried on the owner's ask about the mage, and it took BOTH ranged legs down: the
+    // arrow never loosed and the cast never fired. So the state stands. What stops the mage spamming
+    // is the CADENCE (a cast every SPELL_EVERY_MS, not a cast a frame) plus the engine's own guard: a
+    // click is consumed only while a spell is readied, and casting spends the ready.
     deps.attack?.(!!b.swinging);
     return null;
   }
@@ -914,13 +1071,25 @@ export function createBenchHost(deps) {
           let moved = false;
           try { moved = deps.travel() !== false; } catch { moved = false; }
           if (!moved) {
-            failures.push(`${leg.title}: the map could not open a journey (nowhere discovered to travel to, or the map refused)`);
+            failures.push(`${leg.title}: the world could not open a journey (nowhere discovered to travel to, or the builder refused)`);
             return finish();
           }
         }
+        // AND THE BODY GOES WITH IT. The second watch: "the stream didn't do nothing, happen" - the
+        // leg built the pixel next door and left the camera where it stood, so a person watching saw
+        // a town they already knew. Once the new place has settled the body is STOOD IN IT (its own
+        // centre, through the host's warp), which is the arrival the leg is named for; the stream
+        // that follows is measured too, and the leg cannot end until the arrival has been watched for
+        // STREAM_LAND_MS.
+        if (sawBusy && arrivedAt === null && deps.settle?.()) {
+          let landed = false;
+          try { landed = deps.goTo?.(deps.centre?.()) !== false; } catch { landed = false; }
+          if (landed) arrivedAt = at;
+        }
         if (!deps.settle?.()) sawBusy = true;
         const held = at - phaseAt;
-        if (sawBusy && deps.settle?.() && held >= STREAM_MIN_MS) return endLeg();
+        const watched = arrivedAt === null ? 0 : at - arrivedAt;
+        if (sawBusy && arrivedAt !== null && deps.settle?.() && held >= STREAM_MIN_MS && watched >= STREAM_LAND_MS) return endLeg();
         if (held >= toMs(leg.seconds)) {
           failures.push(sawBusy
             ? `${leg.title}: the stream never settled in ${leg.seconds} s`

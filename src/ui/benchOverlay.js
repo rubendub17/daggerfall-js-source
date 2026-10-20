@@ -110,27 +110,33 @@ export function reportLines(report = {}) {
 export function createBenchOverlay({ onExport = null, onClose = null } = {}) {
   const el = document.createElement('div');
   el.id = 'dfbench';
-  el.style.cssText = 'position:fixed;inset:0;z-index:14;display:none;align-items:center;justify-content:center;'
-    + 'background:rgba(8,10,12,.72);font:13px/1.45 ui-monospace,Menlo,Consolas,monospace;color:#e9e4d9';
+  // OUT OF THE WAY, ON PURPOSE. The card used to sit dead centre over a dimmed page, which hid the
+  // very thing it is measuring: a person watching the dungeon leg saw a dark panel where the corridor
+  // was, and reported that the character was "not going through the dungeon". It is now a COMPACT
+  // PANEL IN THE BOTTOM-LEFT CORNER with no page dimmer, so the game keeps the screen and the card is
+  // a read-out beside it. The card's own presses still land on it (the input lock's one bypass).
+  el.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:14;display:none;align-items:flex-end;justify-content:flex-start;'
+    + 'font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;color:#e9e4d9;pointer-events:none';
   el.style.display = 'none';   // set on the property too: a stub document only sees the property
 
   const card = document.createElement('div');
-  card.style.cssText = 'box-sizing:border-box;width:min(680px,calc(100vw - 28px));max-height:calc(100vh - 28px);overflow:auto;'
-    + 'background:#14161a;border:1px solid #3a3f46;border-radius:12px;padding:16px 18px 14px;box-shadow:0 18px 48px rgba(0,0,0,.55)';
+  card.style.cssText = 'box-sizing:border-box;width:min(430px,calc(100vw - 24px));max-height:min(46vh,420px);overflow:auto;'
+    + 'background:rgba(16,18,22,.88);border:1px solid #3a3f46;border-radius:10px;padding:10px 12px 9px;'
+    + 'box-shadow:0 10px 28px rgba(0,0,0,.45);pointer-events:auto;backdrop-filter:blur(2px)';
   el.appendChild(card);
 
   const title = document.createElement('div');
-  title.style.cssText = 'font:600 15px/1.3 system-ui,sans-serif;letter-spacing:.02em;margin:0 0 2px';
+  title.style.cssText = 'font:600 13px/1.3 system-ui,sans-serif;letter-spacing:.02em;margin:0 0 1px';
   title.textContent = 'Benchmark';
   card.appendChild(title);
 
   const sub = document.createElement('div');
-  sub.style.cssText = 'opacity:.72;margin:0 0 12px;font-size:12px';
+  sub.style.cssText = 'opacity:.72;margin:0 0 8px;font-size:11px';
   sub.textContent = 'the game plays itself';   // NOT "the real game": that sentence told a reader nothing the card's own numbers do not
   card.appendChild(sub);
 
   const body = document.createElement('pre');
-  body.style.cssText = 'margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace';
+  body.style.cssText = 'margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.45 ui-monospace,Menlo,Consolas,monospace';
   body.textContent = '';
   card.appendChild(body);
 

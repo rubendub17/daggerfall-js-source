@@ -307,6 +307,10 @@ const bench = params.has('bench') ? createDungeonBench({
     cam.pitch = Math.atan2(dy, Math.hypot(dx, dz));
     lookFilter.settle();
   },
+  // AND A LEVEL LOOK, for the legs that WALK rather than fight. A walk that keeps whatever pitch the
+  // last fight left it wearing looks at the ceiling all the way down a corridor (the owner: "also
+  // stop looking up"); a walker looks where it is going.
+  level: () => { cam.pitch = 0; lookFilter.settle(); },
   warp: (pt) => { player.spawn(pt[0], pt[1], pt[2]); cam.pos = player.eyeAt(); return true; },
   // the context hands the pool as an ARRAY, not a thunk (its own `foes:` dep above is the thunk)
   navReady: () => !!navMeshOf(),
