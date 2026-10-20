@@ -23,8 +23,8 @@ const frame = (functionName, url = '', lineNumber = -1) => ({ functionName, url,
 
 test('BENCH1: aggregate sums SELF time per function - src/ frames are game code, a URL-less frame is (native), (idle) is its own row, and the total is the deltas it was given', () => {
   // Six samples of a made-up window, added up by hand:
-  //   hotLoop         300 + 500 + 200 = 1000 us   src/scenes/world.js:42 (lineNumber 41)
-  //   drawMesh         200 us                    src/render/renderer.js:300, its ?v=2 query stripped
+  //   hotLoop         300 + 500 + 200 = 1000 us   the world host's own frame function (lineNumber 41)
+  //   drawMesh         200 us                    a renderer frame, its ?v=2 query stripped
   //   (idle)          1000 us                    its own row, never folded into (native)
   //   glDrawElements   100 us                    V8 gives it no url, so it is (native)
   //   (program)          -                       a node in the payload no sample landed on: no row at all

@@ -434,6 +434,7 @@ const NO_THROTTLE = Object.freeze([
   '--disable-renderer-backgrounding',
   '--autoplay-policy=no-user-gesture-required',   // the game's music and its audio graph start without a click
   '--window-size=1280,720',
+  '--start-maximized',   // the run fills the screen: it is a thing a person WATCHES
 ]);
 
 /** The software GL a HEADLESS run draws with, so its numbers are labelled as such and never
@@ -717,7 +718,7 @@ async function run(opts) {
     browser = await launchBrowser(chromium, opts.headed
       ? { headless: false, args: NO_THROTTLE }
       : { headless: true, args: [...NO_THROTTLE, ...SOFTWARE_GL] });
-    const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+    const page = await browser.newPage(opts.headed ? { viewport: null } : { viewport: { width: 1280, height: 720 } });   // headed: the window's own (maximised) size is the frame
     // THE WINDOW HAS TO BE THE ONE IN FRONT, OR NOTHING IS MEASURED. A Chromium window that opens
     // behind the terminal is an OCCLUDED window, and an occluded window's animation frames are
     // throttled to about 1 a second - so the run measured a 1 fps "game" that was really the

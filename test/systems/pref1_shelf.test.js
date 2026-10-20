@@ -47,6 +47,31 @@ const fresh = () => { store = new Map(); P._resetForTests(); };
 const withShelf = (blob) => { store = new Map([[KEY, JSON.stringify(blob)]]); P._resetForTests(); P.loadPrefs(); };
 const reload = () => { P._resetForTests(); P.loadPrefs(); };
 
+test('BENCH1: A PAGE CAN FORCE A SWITCH WITHOUT WRITING THE SHELF - the force lives as long as the page', () => {
+  // A mode that must not see a popup - the benchmark, a screenshot door - turns a switch off for
+  // ITS page and never for the player. The force is answered by `getPref` ahead of the shelf and
+  // ahead of the online lane; nothing is written, so there is nothing to put back and a run that is
+  // closed mid-way leaves the player's own settings exactly as they were.
+  fresh();
+  assert.equal(P.getPref('tutorialPopups'), true, 'the default is on - popups a player gets');
+  P.forcePref('tutorialPopups', false);
+  assert.equal(P.getPref('tutorialPopups'), false, 'the page answers its own force');
+  assert.equal(P.forcedPref('tutorialPopups'), false, 'and says what it forced');
+  assert.deepEqual(Object.keys(shelf()).filter((k) => k !== 'open' && k !== '_rev'), [],
+    'the shelf is untouched - a forced switch is not a choice');
+  P.clearForcedPref('tutorialPopups');
+  assert.equal(P.getPref('tutorialPopups'), true, 'and the force is gone with one call');
+  assert.equal(P.forcedPref('tutorialPopups'), undefined);
+  // a forced key still loses to nothing: the shelf's own override answers once the force is gone
+  P.setPref('tutorialPopups', false);
+  assert.equal(P.getPref('tutorialPopups'), false, 'the player\'s own answer, written');
+  P.forcePref('tutorialPopups', true);
+  assert.equal(P.getPref('tutorialPopups'), true, 'the force is ahead of the shelf');
+  P.clearForcedPref();
+  assert.equal(P.getPref('tutorialPopups'), false, 'and every force goes at once');
+  fresh();
+});
+
 test('PREF1: a value equal to the default is NOT written - the shelf holds overrides and its own map', () => {
   fresh();
   P.setPref('showFps', P.PREF_DEFAULTS.showFps);   // "changing" a pref to what it already is

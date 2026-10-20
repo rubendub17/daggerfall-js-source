@@ -288,6 +288,19 @@ export function clearTutorialLine() {
 }
 
 /** Tests: swap the seams, and start from nothing. */
+/**
+ * BENCH1: PUT THE PAGE AWAY WITHOUT READING IT. clearTutorialLine drops what is WAITING; a box on
+ * screen stays until it is put away, and the benchmark has nobody to press the key that would. So this
+ * disposes the standing box and empties the line - and it does NOT mark anything seen, so a player
+ * still meets these pages when they play the game themselves (the run also puts the pref back).
+ */
+export function dismissTutorials() {
+  clearTutorialLine();
+  const box = current?.box ?? null;
+  current = null;
+  try { box?.dispose?.(); } catch { /* a box already gone */ }
+}
+
 export function _setTutorialDepsForTests(over = {}) {
   clearTutorialLine();
   current = null;

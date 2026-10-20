@@ -13,6 +13,7 @@ import { noteLocalPlayer, tacticsNow, tickTactics } from '../ai/tactics.js';   /
 import { foeFrameDt } from '../characters/enemy/enemyMotor.js';   // AUDIT TACT: the foes' own step, for the brain's clock
 import { drawableBlows } from '../ai/foeBlows.js';   // TACT4
 import { techniqueMarksNow } from '../combat/techniques.js';   // TECH1: the player's own marks on the ground, after the foes'
+import { findPath } from '../ai/nav/navmesh.js';   // BENCH1: the dungeon walked on the mesh its own foes path over - never a straight line into a wall
 import { iilActive, iilDungeonLights, iilTorch, iilSyncLane } from '../systems/improvedInteriorLighting.js';   // IIL1
 import { Arch3dFile } from '../formats/arch3dFile.js';
 import { WORLD_FRAME } from '../render/renderer.js';   // AUDIT-EL F5
@@ -90,7 +91,7 @@ import { createDungeonBench } from './benchHost.js';   // BENCH1: the benchmark,
 import { codeForAction } from '../systems/inputActions.js';   // BENCH1: the bench presses the player's OWN bindings, read here rather than assumed
 import { equipItem } from '../systems/equip.js';   // BENCH1: the bow the fight leg carries, through the game's own equip table
 import { fieldOfView } from '../ui/viewSettings.js';   // MENU: Video/FieldOfView, one home for five hosts
-import { carriedWeight } from '../systems/inventory.js';   // F027 / E4: PlayerEntity.CarriedWeight, the gold counter's term and all
+import { carriedWeight, addItem } from '../systems/inventory.js';   // F027 / E4: PlayerEntity.CarriedWeight, the gold counter's term and all   // BENCH1: and the pack's own add, where a quiver lives
 import { windowEmissionRGB } from '../render/windowEmission.js';   // AUDIT 26 F001/F002: WindowStyle per host (DaggerfallInterior.cs:473/:517/:1270 vs GetMaterial's Day default)
 import { installConsoleProbe } from '../systems/consoleCommands.js';   // E3: the console's door
 import { createSwimMovement } from './deepWater/deepWatersSwimMove.js';   // DW-D: Iliac Puddle No More's swim movement - the dungeon's water too (IsAnySwimming)
@@ -145,7 +146,15 @@ export async function bootDungeon(canvas, renderer, params, status) {
   const placeLoadedPlayer = (p) => { if (!_motorRef) return; _motorRef.spawn(p[0], p[1], p[2]); _motorRef.stopAutorun(); };
   const ctx = await buildDungeonContext(
     { ...pipeline, renderer, arch, palette }, dfLocation, blocks, dfLocation.climate.climateType, { activateHeld: () => held(keys, 'ActivateCenterObject') || _tapArmed > 0, actionDown: (action) => held(keys, action),   // KB1: registry actions
-      // HT1: the torch keys /* AUDIT 62 F8: the finger's press too - it was 'Mouse0' in the held set until the tap stopped speaking a literal code */ foes: !params.has('nofoes'), playerClass: params.has('class') ? Number(params.get('class')) : undefined, playerSpell: params.has('spell') ? Number(params.get('spell')) : undefined, playerWeapon: params.get('weapon') ?? undefined,
+      // HT1: the torch keys
+      /* AUDIT 62 F8: the finger's press too - it was 'Mouse0' in the held set until the tap stopped speaking a literal code */
+      // FIX (BENCH1, 2026-10-19): THESE FOUR WERE DEAD FOR A RELEASE. `// HT1: the torch keys` was left at the head of
+      // this line when its own `keyDown:` property went, and a line comment is a line: `foes`, `playerClass`,
+      // `playerSpell` and `playerWeapon` were never in the opts object at all, so the standalone dungeon host stood
+      // NO foes (every enemy marker fell to the static-flat fallback, silently) and the character door `?class=`
+      // never minted, which is why a benchmark found a wizard on this page and wrote a shim for it. They are code
+      // again; the comment now sits on its own lines, where a property cannot swallow it.
+      foes: !params.has('nofoes'), playerClass: params.has('class') ? Number(params.get('class')) : undefined, playerSpell: params.has('spell') ? Number(params.get('spell')) : undefined, playerWeapon: params.get('weapon') ?? undefined,
       shakeCamera: (k) => betterAmbience.weaponKick(k),   // AUDIT TELL H6: the stagger's kick of my own blow (and an execution's), as the world host gives its dungeons
       // AUDIT 26 F222/F223: the dev scene's half of the pose. The cam
       // is created AFTER the context (from startSpawn), so the seam
@@ -237,8 +246,18 @@ export async function bootDungeon(canvas, renderer, params, status) {
 // the dungeon walked, and one ring of foes fought three ways (a blade, a drawn bow and a readied
 // spell, all three through the ONE swing key the game's ladder routes). The bench presses the
 // player's own bindings, takes the person's hands off the game, and undoes both when the run ends.
+/** The navmesh the dungeon's OWN foes path over: the enhanced AI bakes it from this collider on the
+ *  first frames, and every foe's AI holds the reader for it. Null until it lands - which is what the
+ *  walk leg's settle phase waits on. */
+const navMeshOf = () => (ctx.foes ?? []).find((f) => f.ai?.nav?.())?.ai.nav() ?? null;
 const bench = params.has('bench') ? createDungeonBench({
   params, bindings, codeForAction, equip: (item) => equipItem(playerEntity, item),
+  // BENCH1: A QUIVER IS CARRIED, NOT WORN. `equipItem` refuses an Arrow on its own line
+  // ("cannot equip arrows" - arrows are ammunition), so the Test Room's quiver row went nowhere and
+  // the bow leg drew a string over an empty pack: `bowArrowGuard` sheathes a bow with no arrows in
+  // `entity.items` on the first draw frame, and `spendAmmoFor` has nothing to spend. The pack is the
+  // door both of them read.
+  stow: (item) => addItem(playerEntity.items, item),
   feet: () => [...player.pos],
   heading: () => cam.yaw,
   turnBy: (rad) => { cam.yaw += rad; lookFilter.settle(); },
@@ -246,7 +265,52 @@ const bench = params.has('bench') ? createDungeonBench({
   renderer: () => renderer,
   foes: () => ctx.foes ?? [],
   spellsByIndex: () => ctx.spellsByIndex?.() ?? null,
-  setReadied: (sp) => ctx.magic?.setReadied?.(sp),
+  // BENCH1: THE READY SPELL DOOR IS THE CONTEXT'S CAST ENGINE, which is `ctx.castEngine` - the name
+  // `ctx.magic` answered nothing (the optional chain made the miss silent), so `setReadied` was a
+  // no-op and the spell leg fought with no spell readied at all. One engine, one name: the same
+  // object `firePending` fires from and `readiedSpell()` reads.
+  setReadied: (sp) => ctx.castEngine?.setReadied?.(sp),
+  // AND WHETHER A SPELL IS IN THE HAND, so the spell leg readies its spell again only once the last
+  // cast has actually left the hands (a ready is cleared at the release frame, not at the click).
+  readied: () => !!ctx.castEngine?.readied?.(),
+  // AND WHETHER THE HAND IS OUT: the rig's own `Sheathed`, so the bench's Ready Weapon tap can be
+  // repeated while the weapon is away instead of being spent once on a refusal (the bow's cooldown
+  // still reads zero on the frame a leg begins) and latching on it.
+  drawn: () => ctx.weaponRig?.()?.playerWeapon?.sheathed === false,
+  // AND THE DOOR THE READY KEY ENDS IN, straight: the same weaponRig.readyWeapon() its key poll
+  // calls (dungeon.js's own 'ReadyWeapon' line). A key edge can be lost between two frames; the
+  // door cannot.
+  ready: () => ctx.readyWeapon?.(),
+  // WHERE THIS DUNGEON STARTS A WALK, through the boot's OWN spawn (startSpawn's floor, not a marker's
+  // bake on and the room the player entered by. A fight leg stands the body at a foe's shoulder, and a
+  // body stood in a corner the mesh's erosion kept no floor of is a start `findPath` cannot place -
+  // the walk leg was failing with forty-two destinations tried and none reachable. The walk begins
+  // where the dungeon begins.
+  entry: () => [...spawn],   // the floor this dungeon's own boot stood the body on - and the anchor the enhanced AI bakes its mesh from, so a route from here is from the mesh's own middle
+  // BENCH1: THE THREE DOORS A FIGHT NEEDS, and none of them is a key. The swing is `Mouse1` on this
+  // host and the per-frame latch deliberately skips mouse codes, so a synthetic KeyboardEvent naming
+  // one reaches nothing at all; `playerAttackInput` IS what the window's own `mousedown` calls (see
+  // its mousedown listener above), so the bench presses the mouse's door and holds it exactly as a
+  // held button would. The warp is the motor's own `spawn` - a leg's venue is set before its warmup,
+  // never inside a measured frame. `plan` is the engine's own path query over the navmesh the
+  // dungeon's enhanced AI already baked for its foes; nothing here walks a straight line into a wall.
+  attack: (held) => ctx.playerAttackInput?.(0, 0, !!held),
+  // AND THE AIM, WHICH A BOW AND A SPELL NEED AND A BLADE DOES NOT. A missile leaves along the
+  // camera's own forward vector, so a body that turns its yaw but never its pitch shoots OVER a foe
+  // whose centre is below its eye - the bow and spell legs took nothing off the health they were
+  // measured against. This is the port's own look (the same two writes __pose makes), aimed once a
+  // frame at the foe's mid-capsule.
+  aimAt: (pt) => {
+    const eye = walkMode ? player.eye : cam.pos;
+    const dx = pt[0] - eye[0], dy = pt[1] - eye[1], dz = pt[2] - eye[2];
+    cam.yaw = Math.atan2(dx, dz);
+    cam.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+    lookFilter.settle();
+  },
+  warp: (pt) => { player.spawn(pt[0], pt[1], pt[2]); cam.pos = player.eyeAt(); return true; },
+  // the context hands the pool as an ARRAY, not a thunk (its own `foes:` dep above is the thunk)
+  navReady: () => !!navMeshOf(),
+  plan: (from, to) => { const chf = navMeshOf(); return chf ? findPath(chf, from, to) : null; },
   document: globalThis.document,
 }) : null;
   console.log(`[spawn] marker ${JSON.stringify(ctx.startMarker)} -> feet [${spawn.map((v) => v.toFixed(3)).join(', ')}] (startSpawn build)`);

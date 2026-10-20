@@ -373,4 +373,77 @@ sentence. The CLI drops them from the request, prints the sentence, and opens on
 still have something to play - a run asks for what it can play and says what it left out. A leg on
 that list still fails **by name** if a host is asked for it some other way.
 
+## The second WATCH: all seven legs, each in the scene it names (2026-10-19, later)
+
+The owner ran `npm run bench` again and reported three defects, all fair: the tutorial cards were
+still there, the fighting part was a body standing still in a dungeon, and the dungeon part "just
+walked forward". Every one of them was the bench asking a question the engine does not answer in the
+shape the bench asked it, which is the real lesson of this tool:
+
+- **THE TUTORIAL CARDS ARE OFF AT THE SOURCE, NOT HIDDEN LATER.** A card is read on *dismissal*, and
+  `dismissTutorials()` itself re-queues the card it removes (its `onReplaced` handler fires, because
+  `ActionTextBox.dispose` never sets `done`). It only stayed gone while the pref was off - and the
+  pref was turned off on the run's **first tick**, minutes after the welcome tour had been queued
+  350 ms into `bootWorld`. So the switch is now FORCED one line after the doors are read in
+  `src/main.js` (`uiPrefs.forcePref`, a volatile force that writes nothing to the player's shelf),
+  before any host is imported: nothing is queued, `tutorialDue()` answers false at every seam, and no
+  card is ever built. `?notutorial` is the same door by hand. Two more switches ride with it, because
+  two legs depend on them and two machines must not be compared across them: `enhancedAI` (which bakes
+  the navmesh the dungeon walk uses) and `livingWorld` (which puts the crowd on the street).
+- **THE DUNGEON HAD NO FOES AT ALL, AND THAT WAS A RELEASE-OLD BUG IN THE GAME.** Chasing "the
+  fights take nothing off anyone" found it: `src/scenes/dungeon.js`'s opts literal began with
+  `// HT1: the torch keys` and went on, on the SAME line, with `foes: !params.has('nofoes'),
+  playerClass: …, playerSpell: …, playerWeapon: …`. A line comment is a line, so those four
+  properties were never in the object at all: the standalone dungeon host stood **no foes** - every
+  one of its enemy markers fell silently to the static-flat fallback - and `?class=` never minted a
+  character there, which is exactly the "new character login screen" the owner reported two days
+  earlier, and why the bench had grown a shim for it. The comment now sits on its own lines, the
+  shim is deleted, and the page is a dungeon: 42 live foes out of Privateer's Hold's markers.
+- **THE FIGHT NEEDED THE MOUSE'S DOOR, NOT A KEY.** `SwingWeapon` binds to `Mouse1`, the dungeon
+  host's per-frame latch deliberately skips mouse codes, and a synthetic `KeyboardEvent{code:'Mouse1'}`
+  reaches neither that latch nor the window's `mousedown` handler - so the press went nowhere, and
+  three more things were wrong behind it: `nearestFoe` read a `pos` field a dungeon foe record has
+  never had (every distance came out `NaN`, so no foe was ever found), the weapon started SHEATHED
+  (so even a real press returned), and the leg stopped 4 m short of a weapon that reaches 2.5 m. Now:
+  `systems/bench/fight.js` reads `foe.ai.feet` and answers the standoff the weapon needs, the run
+  presses the player's own Ready Weapon binding once, holds the host's `playerAttackInput` door for
+  exactly as long as the bot holds the swing (the door the window's `mousedown` calls, and the one
+  that runs `magic.interceptAttack` first so a bow and a spell need no code of their own), and each
+  fight leg **proves its damage**: the foes' health is read again at the leg's end, printed on the
+  card, and a leg that took nothing off it is a named failure - a body flailing is not combat.
+- **THE DUNGEON IS WALKED ON THE DUNGEON'S OWN MESH.** The old leg held forward and walked into the
+  first wall it met, and scored the wall's frame rate. The engine already has the answer its own foes
+  use: a navmesh baked from the collider (`findPath`, `ai/nav/navmesh.js`). The host hands the bench
+  that query (`plan`) plus the mesh the foes path on, `systems/bench/dungeonPath.js` picks the
+  furthest destination that is actually reachable and follows the route waypoint by waypoint, and the
+  walk leg's settle phase waits for the bake (30 s ceiling) so a route is never asked for before the
+  mesh exists.
+- **BOTH PAGES PIN THEIR PLACE.** A dungeon's floor plan is DATA, not a sample: `?dungeon` reads a
+  MAPS.BSA location by name. The URL now names it (`&dungeon=Privateer's Hold`, the first dungeon
+  every player starts in), so two runs walk the same floor.
+- **THE TOWN LEGS WERE STANDING IN THE WRONG PLACE, AND THE ROUTE KNEW IT.** The pixel key had a
+  stray space and two backslashes in it (a shell edit, not a design), so the town was never found;
+  `centre()` was the middle of the *grid*, which for the capital is the inside of a block; and the
+  route was planned with the nav's `[x, z]` pair in `planRoute`'s `[x, y, z]` slot, so it started at
+  the town's south rim. Now the centre is the town's own middle (`seatBanners.townCentreOf`, the mean
+  of its buildings, the point the Seats hang their banners on) snapped to the nearest cell a walker
+  may stand on (`snapToWalkable`), the route starts from the body's own cell, its dice are seeded on
+  the pixel so the same town is the same walk twice, and `townPixel()` finds the town even when the
+  boot landed the body in a wilderness neighbour - which is also what was emptying the crowd, since a
+  living town stands its people within 150 m of the PLAYER.
+- **THE STREAM LEG WAS ASKING A WINDOW TO PICK A DESTINATION.** The travel view opens the map; a
+  destination needs a hand. The leg's subject is the hitch of arriving somewhere unbuilt, and the
+  engine's own door for that is the pixel builder, so the leg now builds one pixel next door
+  (`__pixelBuild`, through `world.build`) and measures the settle. It runs, and it reads as the
+  lightest leg in the run - which is itself the finding.
+- **THE CHARACTER IS WAITED FOR.** `?class=` mints the body asynchronously, and the run checked once,
+  on its first frame: a machine busy with something else failed a run whose character was still
+  arriving. The run now waits up to 60 s (`BODY_WAIT_MS`) and names the absence after it.
+
+Measured on the owner's machine in that state (Opera GX, AMD iGPU, Daggerfall's centre with a live
+crowd): street 14 fps 1% low, 1318 draws; crowd 14 fps 1% low, 1364 draws; stream 53 fps 1% low, 72
+draws. The score is the harmonic mean of the legs' 1% lows, so a heavy town leg drags it - which is
+the number a player feels, and the reason the instrument exists.
+
+
 

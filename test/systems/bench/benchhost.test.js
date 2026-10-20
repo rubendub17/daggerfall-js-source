@@ -123,8 +123,8 @@ test('BENCH1 host: a street leg with no authored track fails by name - the bench
   w.play(5.2);   // the warmup, then the first measured frame - where a leg's track is read
   const s = w.host.surface;
   assert.equal(s.state, 'failed');
-  assert.match(s.report.failures[0], /no track is authored for Daggerfall/);
-  assert.match(s.report.failures[0], /tools\/benchTracks\.mjs/, 'the failure names the tool that writes one');
+  assert.match(s.report.failures[0], /nowhere to walk/);
+  assert.match(s.report.failures[0], /npm run tracks/, 'the failure names the tool that writes one');
 });
 
 test('BENCH1 host: the stream leg waits for the journey to START, holds a window you can watch, then ends on the settle', () => {
@@ -161,14 +161,19 @@ test('BENCH1 host: the stream leg waits for the journey to START, holds a window
   assert.match(refused.host.surface.report.failures[0], /the map could not open a journey/);
 });
 
-test('BENCH1 host: a character-creation screen is not a scene - the run refuses rather than filming a wizard', () => {
+test('BENCH1 host: a character-creation screen is not a scene - the run WAITS for the body, then refuses to film a wizard', () => {
+  // ?class= mints the character asynchronously, and a page measured before it lands films the
+  // creation wizard. The first cut checked once, on the first frame, and failed a run whose
+  // character was still arriving; the run now waits (BODY_WAIT_MS) and names the absence after it.
   const w = fakeWorld({ params: new URLSearchParams('bench=crowd') });
-  const body = w.body;
-  body.chargenDone = false;   // the standalone dungeon door leaves the wizard standing
-  w.play(1);
+  w.body.chargenDone = false;   // the wizard is up, and stays up
+  w.play(30);
+  assert.equal(w.host.surface.state, 'running', 'the character may still be minting - the run waits');
+  assert.equal(w.host.surface.report, null, 'and measures nothing while it waits');
+  w.play(40);                   // past BODY_WAIT_MS
   const s = w.host.surface;
   assert.equal(s.state, 'failed');
-  assert.match(s.report.failures[0], /no character - the character-creation screen is up/);
+  assert.match(s.report.failures[0], /no character after 60 s/);
   assert.equal(s.report.legs.length, 0, 'no leg was measured over it');
 });
 
@@ -182,11 +187,16 @@ test('BENCH1 host: no bindings, no hands - the leg fails rather than pressing a 
 });
 
 test('BENCH1 host: the fight legs press ONE swing code on the cadence, and the host decides which system answers', () => {
+  // THE MOUSE'S OWN DOOR, held and let go. `SwingWeapon` binds to Mouse1 on the dungeon host and its
+  // per-frame latch skips mouse codes, so the synthetic key alone reaches nothing: the leg also holds
+  // the host's attack door while the bot holds the swing, which is what fires the bow on release.
+  const pressed = [];
   const w = fakeWorld({
     scene: 'dungeon',
     params: new URLSearchParams('bench=blade'),
     census: () => 5,
-    foeAt: () => [0, 0, 10],
+    foes: () => [{ ai: { feet: [0, 0, 10], height: 1.8 }, entity: { health: 40, maxHealth: 40 }, dead: false }],
+    attack: (held) => pressed.push(!!held),
   });
   w.play(5 + 6);
   assert.deepEqual(w.asked.prepared, ['blade'], 'the leg prepared its gear once, through the host\'s own door');
@@ -195,7 +205,65 @@ test('BENCH1 host: the fight legs press ONE swing code on the cadence, and the h
   assert.ok(swings <= Math.ceil((6000 / SWING_EVERY_MS)) + 1, `not more than the cadence allows: ${swings}`);
   assert.equal(w.asked.press.every((c) => c === 'Mouse1' || c === 'KeyW' || c === 'KeyR'), true,
     `only the player's bound codes: ${JSON.stringify(w.asked.press)}`);
+  assert.ok(pressed.includes(true), 'the attack door was HELD - the press a mouse button would make');
+  assert.ok(pressed.includes(false), 'and let go between swings, because a bow fires on the release');
+  assert.ok(pressed.filter(Boolean).length < pressed.length, 'a hold that never ends is not a swing');
   assert.ok(SWING_MS < SWING_EVERY_MS, 'a swing ends before the next begins, or the hold never releases');
+});
+
+test('BENCH1 host: a fight that takes nothing off the foes is a named failure - flailing is not combat', () => {
+  const w = fakeWorld({
+    scene: 'dungeon',
+    params: new URLSearchParams('bench=blade'),
+    census: () => 5,
+    foes: () => [{ ai: { feet: [0, 0, 10], height: 1.8 }, entity: { health: 40, maxHealth: 40 }, dead: false }],
+    foeHealth: () => 40,   // never falls: every blow missed
+  });
+  w.play(5 + 20 + 1);
+  const s = w.host.surface;
+  assert.equal(s.state, 'failed');
+  assert.match(s.report.failures.join(' | '), /no blow landed/);
+  assert.equal(s.report.legs[0].damage, 0, 'and the card says what the leg actually took off them');
+});
+
+test('BENCH1 host: a fight leg whose blows land reports the damage, and the run passes', () => {
+  let health = 40;
+  const w = fakeWorld({
+    scene: 'dungeon',
+    params: new URLSearchParams('bench=blade'),
+    census: () => 5,
+    foes: () => [{ ai: { feet: [0, 0, 10], height: 1.8 }, entity: { health, maxHealth: 40 }, dead: false }],
+    foeHealth: () => health,
+  });
+  w.play(5 + 10);
+  health = 12;
+  w.play(20);
+  const s = w.host.surface;
+  assert.equal(s.state, 'done', JSON.stringify(s.report.failures));
+  assert.equal(s.report.legs[0].damage, 28, 'the health the leg\'s own blows took');
+  assert.match(s.report.legs[0].notes.join(' | '), /28 point\(s\) of foe health/);
+});
+
+test("BENCH1 host: the dungeon walk is the ENGINE's route, followed waypoint by waypoint, not a straight line", () => {
+  // the first real run held forward and walked into the first wall it met. The walk leg now asks the
+  // host for a plan over the dungeon's own navmesh and steers at its waypoints - so the headings it
+  // asked for are the ROUTE's, and a plan that cannot be walked is a named failure.
+  const asked = [];
+  const w = fakeWorld({
+    scene: 'dungeon',
+    params: new URLSearchParams('bench=dungeon'),
+    census: () => 5,
+    foes: () => [{ ai: { feet: [0, 0, 40], height: 1.8 }, entity: { health: 40, maxHealth: 40 }, dead: false }],
+    plan: (from, to) => { asked.push([from[0], to[0]]); return [[from[0], from[1], from[2]], [from[0] + 6, from[1], from[2] + 6], [to[0], to[1], to[2]]]; },
+  });
+  w.play(5 + 4);
+  assert.equal(asked.length >= 1, true, 'the leg asked the engine for a route');
+  assert.equal(w.asked.press.includes('KeyW'), true, 'and walked it, holding the player\'s own Walk Forward');
+  // a page with no plan at all says so, by name
+  const blind = fakeWorld({ scene: 'dungeon', params: new URLSearchParams('bench=dungeon'), census: () => 5, foes: () => [{ ai: { feet: [0, 0, 40] }, entity: { health: 1 }, dead: false }] });
+  blind.play(5 + 2);
+  assert.equal(blind.host.surface.state, 'failed');
+  assert.match(blind.host.surface.report.failures[0], /no dungeon route/);
 });
 
 test('BENCH1 host: stop() mid-run is a named failure, and the surface is torn down', () => {

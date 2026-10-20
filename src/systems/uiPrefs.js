@@ -364,7 +364,23 @@ export function overridesOf(prefs) {
   out[SHELF_STAMP] = SHELF_REV;
   return out;
 }
+/** PREFS FORCED FOR THIS PAGE (BENCH1, 2026-10-19): a mode that must not see a popup - the
+ *  benchmark, a screenshot door - turns a switch off HERE and not in the shelf, so the player's
+ *  own settings are never edited by a run and nothing has to be put back afterwards (the page is
+ *  the whole life of the force: `main.js` sets it before any host exists, and a reload forgets
+ *  it). `setPref`'s sibling, one scope narrower - `getPref` answers it first, and `setPref` still
+ *  writes the shelf exactly as it always did, so a page that forces a key and then sets it is
+ *  telling two different truths and it is the CALLER's job not to. */
+const FORCED = new Map();
+/** Force a key's answer for this page only - no shelf write. */
+export function forcePref(k, v) { FORCED.set(k, v); }
+/** Drop one forced key, or every one of them when called with no key. */
+export function clearForcedPref(k) { if (k === undefined) FORCED.clear(); else FORCED.delete(k); }
+/** The forced answer for `k`, or undefined - the same contract `onlineForcedPref` keeps. */
+export function forcedPref(k) { return FORCED.has(k) ? FORCED.get(k) : undefined; }
 export function getPref(k) {
+  const page = forcedPref(k);   // BENCH1: this page's own force, ahead of the lane's and the shelf's
+  if (page !== undefined) return page;
   const forced = onlineForcedPref(k);   // OL1: online is the enhanced lane, whole - a forced switch reads forced and the shelf is not written
   if (forced !== undefined) return forced;
   if (_prefs === null) loadPrefs();
@@ -378,4 +394,4 @@ export function setOpen(catId, group, open) {
   savePrefs();
 }
 export function resetPrefs() { _prefs = { ...PREF_DEFAULTS, open: {} }; savePrefs(); }
-export function _resetForTests() { _prefs = null; }
+export function _resetForTests() { _prefs = null; FORCED.clear(); }

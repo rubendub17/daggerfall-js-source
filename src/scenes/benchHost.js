@@ -28,23 +28,62 @@
 import { BENCH_LEGS, BENCH_PRESET, BENCH_VITAL, legsOf, scoreOf, censusOk, parseLegs } from '../systems/bench/law.js';
 import { summarise } from '../systems/bench/recorder.js';
 import { createBenchBot } from '../systems/bench/bot.js';
-import { nextWaypoint, trackLength, validateTrack } from '../systems/bench/track.js';
+import { nextWaypoint, trackLength, validateTrack, distanceTo } from '../systems/bench/track.js';
+import { planRoute, snapToWalkable, seededRandom } from '../systems/bench/route.js';   // BENCH1: a street route off the town's own navigation grid, the same route every run
+import { townCentreOf } from './seatBanners.js';   // BENCH1: the town's own middle - the point the Seats hang their banners on, not the mean of its blocks
 import { BENCH_TRACKS } from '../systems/bench/tracks.js';
+import { nearestFoe, standoffSpot, aimYaw, foeFeet, foeCentre, foeHealthTotal } from '../systems/bench/fight.js';   // BENCH1: the fight's own geometry - where a foe IS (its AI's feet, not a `pos` it never had) and where a body must stand to reach it
+import { pickWalk, advancePath } from '../systems/bench/dungeonPath.js';   // BENCH1: the dungeon walked on the dungeon's own navmesh, the one its foes already path over
 import { createBenchOverlay, reportLines } from '../ui/benchOverlay.js';
 import { installInputLock } from '../systems/bench/lock.js';   // BENCH1: the player's hands off the game while the run is live
-import { tutorialPopupsOn, setTutorialPopups } from '../systems/tutorials.js';   // BENCH1: the tutorials off, as the owner asked - a popup mid-leg holds the motor
+import { forcePref, clearForcedPref } from '../systems/uiPrefs.js';   // BENCH1: the tutorials off for THIS page and no shelf write - a run must not edit the switch a player keeps
+import { dismissTutorials } from '../ui/tutorialPopup.js';   // BENCH1: and the card STANDING on screen put away - it stays until dismissed, and the bench has no hand to press the key
 import { testGearRows, testItemOf, testMissileSpells, addTestMissileSpells } from '../systems/testRoom.js';   // BENCH1: the combat kit is the Test Room's (Home.md: one exports, the other imports)
 
 /** How long a swing is held, and how often the next begins. One rhythm for all three weapons:
  *  the host's own ladder decides which system answers the press. */
 export const SWING_MS = 420;
 export const SWING_EVERY_MS = 700;
+/** How long a BOW is held before it looses, milliseconds - a draw is not a swing, and a release at a
+ *  fifth of the draw tests the cancel rather than the arrow. */
+export const BOW_DRAW_MS = 900;
 /** How fast the crowd leg turns the view, radians a second - a look around, not a spin. */
 export const SWEEP_RAD_S = 0.35;
-/** How near a foe is the one being fought, metres. Further than this and the leg walks first. */
+/** How near a foe is the one being fought, metres - the classic spawn band's horizontal reach, so
+ *  the foe has taken the player for a target by the time the leg swings. */
 export const FOE_REACH_M = 25;
-/** How far ahead the dungeon leg walks when there is no route to follow, metres. */
-export const DUNGEON_AHEAD_M = 6;
+/** How close the body walks to a foe before it stops to fight, metres - inside the weapon's own
+ *  reach (the game measures a blow from the EYE to the foe's mid-capsule, 2.5 m), with room for a
+ *  body that keeps drifting. */
+export const FIGHT_CLOSE_M = 1.8;
+/** How long the Ready Weapon press is held, milliseconds - a few frames, so the host's per-frame
+ *  latch sees the edge (a synthetic key that goes down and up inside one frame is never read). */
+export const READY_HOLD_MS = 200;
+/** How many times a run taps the Ready Weapon key before it accepts that the weapon will not come
+ *  out, milliseconds apart (see `drawWeapon`). `WeaponManager.Update`'s arm refuses the key on its
+ *  own grounds - a bow's cooldown, a hand still swapping - and the bow's clock is still at zero on
+ *  the frame a leg begins, so the first tap of a bow leg is refused by the game's own law. A person
+ *  presses again; so does the bot, but only while the rig says the weapon is away, and never more
+ *  than a handful of times (the key is a toggle, and a run that tapped it blindly would sheathe the
+ *  weapon it just drew). */
+export const DRAW_TRIES = 20;
+/** How long to wait before the next draw tap, milliseconds - longer than a frame, so the host has
+ *  read the press under it before the next one arrives. */
+export const DRAW_AGAIN_MS = 400;
+/** How long the walk leg waits for the dungeon's own navmesh before it says it has none,
+ *  milliseconds - a worker bake of a large collider takes seconds; a page whose AI never bakes must
+ *  cost one leg's wait, not a run's. */
+export const MESH_WAIT_MS = 30000;
+/** The legs that are FIGHTS: the blade, the bow and the spell. Each is stood in its ring before the
+ *  warmup, and each proves at its end that its own blows took something off the foes' health. */
+export const FIGHT_IDS = Object.freeze(['blade', 'bow', 'spell']);
+/** How long a run waits for `?class=` to mint its character before it names the absence as the
+ *  failure, milliseconds. The mint is a few hundred milliseconds on an idle machine and seconds on a
+ *  busy one - and a benchmark that measured the creation wizard would be measuring nothing. */
+export const BODY_WAIT_MS = 60000;
+/** The seed a town's street route is planned from: its own pixel, so the same town is the same walk
+ *  on every machine - the one thing two benchmark runs must share. */
+export const routeSeed = (px, py) => (((Number(px) || 0) * 73856093) ^ ((Number(py) || 0) * 19349663) ^ 0x9e3779b9) >>> 0;
 
 /**
  * The world page's benchmark, wired from what only the streaming host knows. The host passes
@@ -59,6 +98,66 @@ export const DUNGEON_AHEAD_M = 6;
  * }} host
  */
 export function createWorldBench(host) {
+  // THE TOWN'S CENTRE, THE ROUTE AND A JOURNEY, answered here rather than in the host (HOST-SPLIT:
+  // the host hands world - its state, motor, camera and a few doors - and this module asks the
+  // questions). The centre is the town's own middle (`seatBanners.townCentreOf`, the mean of its
+  // buildings - the same point the Seats hang their banners on), snapped to the nearest cell a
+  // walker can stand on, because the mean of a town's buildings is regularly the inside of a block.
+  // The route is planned off that same navigation grid, from where the body actually is.
+  const w = host.world ?? null;
+  const pixelNow = () => {
+    if (!w?.state?.current) return null;
+    const p = host.built?.get?.(`${w.state.current.x},${w.state.current.y}`) ?? null;
+    return p?.population?.nav ? p : null;
+  };
+  const offsetOf = (p) => {
+    const t = w.state.pixelTranslation(p.px, p.py);
+    return [p.locOrigin[0] + t[0], p.locOrigin[2] + t[2]];   // pixel-local -> the world's x and z
+  };
+  const toWorld = (p, lx, lz) => {
+    const off = offsetOf(p);
+    const x = lx + off[0];
+    const z = lz + off[1];
+    return [x, w.heightAt ? (w.heightAt(x, z) ?? 0) : 0, z];
+  };
+  /** The town's middle, in the pixel's local frame and on a walkable cell - or null. */
+  const centreCell = (p) => {
+    const mid = townCentreOf(p.homeFrames ?? null);
+    return snapToWalkable(p.population.nav, mid[0], mid[1]);
+  };
+  /** ONE PIXEL NEXT DOOR, built by the streaming host's own builder - the stream leg's subject. */
+  const journeyFn = () => {
+    const px = w?.travelPixel ? w.travelPixel() : null;
+    if (!px || !w?.build) return false;
+    try { w.build(px.x + 1, px.y); } catch { return false; }
+    return true;
+  };
+  /**
+   * THE TOWN, WHETHER OR NOT THE BODY IS STANDING IN IT. `pixelNow` is the pixel the player is in,
+   * and a boot lands a body at a start marker or the location's edge - regularly a wilderness
+   * neighbour with no population at all. Answering only that pixel left the crowd leg standing at
+   * the arrival spot with nobody about (the crowd is stood within 150 units of the PLAYER, so an
+   * empty street was the bench's own doing, not the capital's), and it made the street leg report
+   * "no navigation grid where the player stands" about a town that had one all along. So: the
+   * player's own pixel when it is a town, else the nearest built pixel that carries a navigation
+   * grid - nearest by the map's own pixel distance, which is all a streamed town's frame offers.
+   */
+  const townPixel = () => {
+    const own = pixelNow();
+    if (own) return own;
+    const at = w?.cam?.pos ?? null;
+    let best = null, bestD = Infinity;
+    for (const p of host.built?.values?.() ?? []) {
+      if (!p?.population?.nav || !p.locOrigin) continue;
+      let d = 0;
+      if (at) {
+        const t = w.state.pixelTranslation(p.px, p.py);
+        d = Math.hypot(at[0] - (p.locOrigin[0] + t[0]), at[2] - (p.locOrigin[2] + t[2]));
+      }
+      if (d < bestD) { bestD = d; best = p; }
+    }
+    return best;
+  };
   return createBenchHost({
     scene: 'world',
     params: host.params,
@@ -97,7 +196,45 @@ export function createWorldBench(host) {
       if (key === 'pixels') return host.built?.size ?? 0;
       return null;
     },
-    travel: host.travel ?? null,
+    centre: () => {
+      const p = townPixel();
+      const cell = p ? centreCell(p) : null;
+      if (!cell) return null;
+      const [lx, lz] = p.population.nav.navToWorld(cell[0], cell[1]);
+      return toWorld(p, lx, lz);
+    },
+    goTo: (pt) => (Array.isArray(pt) && w?.spawn ? w.spawn(pt) : false),
+    route: () => {
+      const p = townPixel();
+      if (!p) return [];
+      const nav = p.population.nav;
+      // FROM THE BODY'S OWN PLACE, not from the town's middle: the walk a person watches starts
+      // wherever the leg put the player (the crowd and street legs are both stood in the centre),
+      // and a route from a point the body is not at makes the first waypoint a straight line
+      // through whatever stands between.
+      const off = offsetOf(p);
+      const feet = host.feet?.() ?? null;
+      const local = feet ? [feet[0] - off[0], feet[2] - off[1]] : null;
+      let start = local;
+      if (!start || nav.weightAt(...nav.worldToNav(start[0], start[1])) <= 0) {
+        const cell = centreCell(p);
+        if (!cell) return [];
+        start = nav.navToWorld(cell[0], cell[1]);
+      }
+      return planRoute({ nav, start: [start[0], 0, start[1]], rand: seededRandom(routeSeed(p.px, p.py)) })
+        .map(([lx, , lz]) => toWorld(p, lx, lz));
+    },
+    journey: journeyFn,
+    // THE STREAM LEG'S START. Its subject is the hitch of ARRIVING somewhere the world has not begun
+    // to build, and the engine's own door for that is the PIXEL BUILDER (`__pixelBuild`, the
+    // streaming host's own probe) - not the travel map. The map is a window a person picks a
+    // destination in, and a benchmark has no hand to pick one with: the first real run's stream leg
+    // opened the map, waited on a queue nobody had started, and failed by name after sixty seconds.
+    // One pixel next door, built by the real builder, is the same work the game does when a player
+    // walks across the border; the pixels it builds are the pixels a walk would have queued.
+    travel: () => {
+      try { return journeyFn() ?? false; } catch { return false; }
+    },
     build: host.build ?? null,
     document: host.document,
   });
@@ -113,52 +250,147 @@ function hostSyntheticKey(type, code) {
   w.dispatchEvent(new K(type, { code, bubbles: true }));
 }
 
-/** The nearest live foe to `at`, in the shape `deps.foeAt` answers - null when none is in reach.
- *  A dungeon's foes carry their own x/y/z (dungeonContext's own record); a pool that carries a
- *  `pos` is read the same way. */
-export function nearestFoe(foes, at, reach = FOE_REACH_M) {
-  let best = null;
-  let bestD = reach;
-  for (const f of foes ?? []) {
-    if (!f || f.dead) continue;
-    const p = f.pos ?? f;
-    const dx = (p.x ?? p[0]) - at[0];
-    const dz = (p.z ?? p[2]) - at[2];
-    const d = Math.hypot(dx, dz);
-    if (d < bestD) { bestD = d; best = [p.x ?? p[0], (p.y ?? p[1]) ?? at[1], p.z ?? p[2]]; }
-  }
-  return best;
-}
 
 /**
- * The dungeon page's benchmark. Its legs are the dungeon walked and the same ring of foes fought
- * three ways, and the three ways are ARMED HERE from the Test Room's own producers - never from a
- * second item table: `testGearRows`/`testItemOf` for the bow and its quiver, `addTestMissileSpells`
- * for something that flies. The press is ONE press for all three (`magic.interceptAttack` first,
- * then `weaponRig.attackInput`), which is why nothing below touches the swing.
+ * The dungeon page's benchmark. Its legs are the same ring of foes fought three ways and the
+ * dungeon walked, and the three ways are ARMED HERE from the Test Room's own producers - never from
+ * a second item table: `testGearRows`/`testItemOf` for the bow and its quiver, `addTestMissileSpells`
+ * for something that flies.
+ *
+ * THE HANDS THE DUNGEON ANSWERS. A melee, a bow and a spell are one DOOR in this host
+ * (`playerAttackInput`, which runs `magic.interceptAttack` first and `weaponRig.attackInput`
+ * otherwise), and it is a MOUSE door: `SwingWeapon` binds to `Mouse1`, `swingKeyHeld` deliberately
+ * skips mouse codes, and the only other way in is a real `mousedown` on the window. A synthetic
+ * `KeyboardEvent{code:'Mouse1'}` therefore reaches nothing at all - the first real run's fights were
+ * a body standing still, swinging the air in front of a foe 20 m away. So the dungeon page hands the
+ * bench the door the mouse itself calls, and the bench holds it exactly as long as the bot holds the
+ * key (see `deps.attack`): one press for all three weapons, one release that fires the arrow.
+ *
+ * AND THE WEAPON IS READIED FIRST. A classic character starts with the weapon sheathed
+ * (`playerWeapon.sheathed = true`) and `attackInput` returns on it, so the run presses the player's
+ * own Ready Weapon binding before the first fight leg - a key, so a synthetic press is honest here.
+ * A PRESS IS NOT A DRAW, THOUGH: `WeaponManager.Update`'s arm refuses the key on its own grounds
+ * (`weaponRig.readyWeapon`, :229-269 - a bow's cooldown among them, and the bow's clock is still at
+ * zero on the frame a leg begins), and the key is a TOGGLE. So the press is repeated only while
+ * `deps.drawn` - the rig's own `Sheathed` read - says the weapon did NOT come out, which is what a
+ * person does when Z does nothing. Without that read the press is made once and never repeated: a
+ * blind second tap would just put the weapon away again.
+ *
+ * THE QUIVER IS CARRIED, NOT WORN. `equipItem` refuses an Arrow by its own line ("cannot equip
+ * arrows"), so the quiver row goes into the pack through `deps.stow` - which is where `spendAmmoFor`
+ * spends from and where the bow's own guard (`bowArrowGuard`) counts it. A bow with no quiver in the
+ * PACK is sheathed on its first draw frame and looses nothing at all.
+ *
+ * THE BODY IS STOOD BEFORE ITS WARMUP. A fight leg is measured on the fight, not on the walk to it:
+ * the leg's venue is set in `prepareLeg` (the same way the town legs are stood in the town's
+ * middle), never during a measured frame. The walk leg is the one that asks about pathing, and it
+ * asks the engine (`findPath` over the dungeon's own baked navmesh, which the foes themselves use).
  * @param {{
  *   params: URLSearchParams, feet: () => number[], heading: () => number,
  *   turnBy: (rad:number) => void, entity: () => any, renderer?: (() => any) | null,
  *   foes: () => any[], bindings: () => any, codeForAction: (store:any, action:string) => string | null,
  *   spellsByIndex?: (() => any) | null, setReadied?: ((spell:any) => void) | null,
- *   equip?: ((item:any) => void) | null, document?: any,
+ *   equip?: ((item:any) => void) | null, stow?: ((item:any) => void) | null,
+ *   drawn?: (() => boolean) | null, warp?: ((pt:number[]) => boolean) | null,
+ *   attack?: ((held:boolean) => void) | null, plan?: ((from:number[], to:number[]) => number[][] | null) | null,
+ *   aimAt?: ((pt:number[]) => void) | null, navReady?: (() => boolean) | null, document?: any,
  * }} host
  */
 export function createDungeonBench(host) {
+  /** The spell a spell leg fights with, readied again before every blow (`rearm`) - null on every
+   *  other leg. A cast SPENDS the ready (`releaseFrame`'s own `readiedSpell = null`), so a leg that
+   *  readies once casts once and then swings the air for the rest of its twenty seconds. */
+  let spellFor = null;
   const armGear = (id) => {
     const body = host.entity?.();
+    spellFor = null;
     if (!body) return;
     if (id === 'bow') {
+      // A BOW WITHOUT A QUIVER TESTS THE REFUSAL, NOT THE WEAPON - the Test Room's own note on its
+      // rows. The quiver is a row of its own there, so it is taken here too, or the leg measures a
+      // drawn string that can never loose. It cannot be EQUIPPED (arrows are ammunition, and
+      // `equipItem` says so), so it is STOWED.
       const rows = testGearRows(body.gender);
       const bow = rows.find((r) => r.kind === 'weapon' && /bow/i.test(String(r.label ?? '')));
       if (bow && host.equip) host.equip(testItemOf(bow));
+      const quiver = rows.find((r) => r.kind === 'arrows');
+      if (quiver && host.stow) host.stow(testItemOf(quiver));
     }
     if (id === 'spell') {
       const index = host.spellsByIndex?.() ?? null;
       addTestMissileSpells(body, index);
       const flier = testMissileSpells(index)[0] ?? null;
+      spellFor = flier;
       if (flier && host.setReadied) host.setReadied(flier);
+      // THE MANA TO CAST IT WITH, and it is the SAME KIND OF WRITE AS THE HEALTH POOL: a leg's
+      // venue, set before its warmup and recorded on the card. The pinned character is a Nord
+      // Warrior (class 16) - a body with no spell points at all - so a spell leg without this line
+      // measures a hand that cannot cast, which is not the spell system's frame rate.
+      if (Number.isFinite(body.maxMagicka) && body.maxMagicka > 0) body.magicka = body.maxMagicka;
     }
+  };
+  /** Ready this leg's spell again - asked at each blow's start (see `deps.rearm`), and only while
+   *  the hand is EMPTY: `readiedSpell` is still set while a cast is in the air (it is cleared at the
+   *  release frame), so this cannot ready a second cast under the first. A spell leg that never
+   *  re-readied itself cast exactly once and spent the rest of the leg on an empty hand. */
+  const rearm = () => {
+    if (!spellFor || !host.setReadied) return;
+    if (typeof host.readied === 'function' && host.readied()) return;   // a spell is already in hand
+    host.setReadied(spellFor);
+  };
+  /** Draw the weapon - once per run, before the first weapon fight. The binding is the player's own
+   *  (`ReadyWeapon`), and the press is held long enough for the host's per-frame latch to see it.
+   *  Repeated only while `host.drawn` says the weapon is still away (`DRAW_TRIES` taps at most, and
+   *  the same key is never left down), because the key is a toggle and a blind second tap would
+   *  sheathe what the first one drew. */
+  let drew = false;
+  let drawTries = 0;
+  let walkNext = false;
+  /** A NEW LEG'S WEAPON IS A NEW DRAW. `armGear` equips the leg's own weapon, and an equip puts the
+   *  weapon AWAY (`playerWeapon.sheathed` goes true on the swap) - so the bow leg began with the
+   *  Ready Weapon press already spent on the blade's, the rig refusing every press behind
+   *  `sheathed`, and twenty seconds of a drawn string that never loosed. The count is per leg. */
+  const forgetTheDraw = () => { drew = false; drawTries = 0; };
+  const drawWeapon = () => {
+    if (drew || drawTries >= DRAW_TRIES) return;
+    const answerable = typeof host.drawn === 'function';   // can this page say whether the hand is out?
+    if (answerable && host.drawn()) { drew = true; return; }   // nothing to draw
+    drawTries++;
+    // ONE DOOR PER TAP, NEVER TWO: the ready is a TOGGLE, so pressing the door and the key in the
+    // same breath draws the weapon and puts it straight back - which is exactly what a first cut of
+    // this did, and it took the blade leg down with it. The door (`weaponRig.readyWeapon()`, the
+    // rung the Ready Weapon key's poll ends in) answers for a page that wires one; a page that does
+    // not gets the key press it always had.
+    if (typeof host.ready === 'function') {
+      try { host.ready(); } catch { /* a rig that refused */ }
+      if (!answerable) drew = true;
+      else globalThis.setTimeout?.(() => { if (!drew) drawWeapon(); }, DRAW_AGAIN_MS);
+      return;
+    }
+    let code = null;
+    try { code = host.codeForAction?.(host.bindings?.(), 'ReadyWeapon') ?? null; } catch { code = null; }
+    if (!code) return;
+    hostSyntheticKey('keydown', code);
+    globalThis.setTimeout?.(() => {
+      hostSyntheticKey('keyup', code);
+      // A PAGE THAT CANNOT ANSWER GETS THE ONE PRESS IT ALWAYS HAD. One that can answer gets another
+      // tap while the weapon is still away - the frame after this one is where the host reads the
+      // press, so the next tap waits a beat (DRAW_AGAIN_MS) for that frame to pass.
+      if (!answerable) drew = true;
+      else globalThis.setTimeout?.(() => { if (!drew) drawWeapon(); }, DRAW_AGAIN_MS);
+    }, READY_HOLD_MS);
+  };
+
+  /** Stand the body in the fight: on the line between it and the nearest live foe, at striking
+   *  distance. Answers whether it moved - a page that offers no warp keeps the body where it is and
+   *  the fight leg says so by name. */
+  const standInTheFight = () => {
+    const at = host.feet?.() ?? null;
+    const foe = nearestFoe(host.foes?.() ?? [], at, Number.POSITIVE_INFINITY);
+    if (!at || !foe) return false;
+    const spot = standoffSpot(foe, at);
+    if (!spot) return false;
+    return host.warp?.(spot) !== false;
   };
   return createBenchHost({
     scene: 'dungeon',
@@ -175,10 +407,43 @@ export function createDungeonBench(host) {
     },
     entity: host.entity,
     renderer: host.renderer ?? null,
-    settle: () => true,   // a dungeon is built whole at boot: there is no stream to wait for
+    // THE DUNGEON IS BUILT WHOLE AT BOOT - but the WALK waits for the mesh it is walked on. The
+    // navmesh the foes themselves path over is baked by the dungeon's own enhanced AI on its first
+    // frames (a worker bake of the collider's many thousand triangles), and a route asked for
+    // before it lands answers null. So the WALK leg's settle phase is "the mesh is here" - a truth
+    // of this scene, not a stream - and only that leg waits: a fight leg has nothing to wait for,
+    // and a page whose AI never bakes must cost one leg's wait, not four (`MESH_WAIT_MS`).
+    settle: () => (walkNext && typeof host.navReady === 'function' ? !!host.navReady() : true),
+    settleCeilingMs: MESH_WAIT_MS,
     census: (key) => (key === 'foes' ? (host.foes?.()?.length ?? 0) : null),
-    prepareLeg: (id) => armGear(id),
-    foeAt: () => nearestFoe(host.foes?.() ?? [], host.feet?.() ?? [0, 0, 0]),
+    prepareLeg: (id) => {
+      walkNext = id === 'dungeon';
+      armGear(id);
+      forgetTheDraw();   // this leg's weapon was just put away by its own equip: draw it again
+      // THE WALK BEGINS WHERE THE DUNGEON BEGINS. A fight leg has just stood the body at a foe's
+      // shoulder - regularly a corner no navmesh floor survived - and a route whose start cannot be
+      // placed is no route at all (the run before this one tried forty-two destinations and found
+      // none). The entry is the floor the enhanced AI's own bake anchors on.
+      if (walkNext) { try { host.warp?.(host.entry?.() ?? null); } catch { /* no entry: walk from where it stands */ } return; }
+      // THE WEAPON IS DRAWN FOR THE WEAPONS, AND THE CASTER KEEPS IT AWAY. A readied spell fires
+      // through a sheathed hand (`playerAttackInput` runs `magic.interceptAttack` BEFORE the sheath
+      // gate - DFU's cast is a component of its own), and `readyWeapon`'s own arm ABORTS a readied
+      // spell and sheathes the weapon in the same press: the Ready Weapon key on a spell leg would
+      // take the leg's spell away from it.
+      if (id !== 'spell') drawWeapon();
+      standInTheFight();
+    },
+    foes: () => host.foes?.() ?? [],
+    foeHealth: () => foeHealthTotal(host.foes?.() ?? []),
+    rearm,   // BENCH1: the spell leg's ready, made again before each blow (a cast spends it)
+    attack: host.attack ?? null,
+    aimAt: host.aimAt ?? null,
+    drawn: host.drawn ?? null,
+    ready: host.ready ?? null,
+    readied: host.readied ?? null,
+    stow: host.stow ?? null,
+    entry: host.entry ?? null,
+    plan: host.plan ?? null,
     build: null,
     document: host.document,
   });
@@ -214,9 +479,14 @@ const turnTo = (want, have) => {
  *   codes: () => { forward?:string, run?:string, swing?:string } | null,
  *   entity: () => any, renderer?: (() => any) | null,
  *   settle?: (() => boolean) | null,
+ *   settleCeilingMs?: number | null,
  *   census?: ((key:string) => number | null) | null,
  *   prepareLeg?: ((id:string, host:any) => void) | null,
- *   foeAt?: (() => number[] | null) | null,
+ *   foes?: (() => any[]) | null,
+ *   foeHealth?: (() => number | null) | null,
+ *   attack?: ((held:boolean) => void) | null,
+ *   rearm?: (() => void) | null,
+ *   plan?: ((from:number[], to:number[]) => number[][] | null) | null,
  *   travel?: (() => boolean) | null,
  *   applyPreset?: ((preset:object|null) => void) | null,
  *   build?: (() => string | null) | null,
@@ -236,6 +506,10 @@ export function createBenchHost(deps) {
   const asIs = deps.params?.get('benchpreset') === 'off';
   const doc = deps.document ?? globalThis.document;
   const clock = deps.now ?? (() => globalThis.performance?.now?.() ?? Date.now());
+  /** How long a leg may wait for its scene to settle. A page with a stream keeps the town's own
+   *  ceiling; a page that waits for one bake instead (`MESH_WAIT_MS`) must not hold a run for three
+   *  minutes when the thing it waits for never arrives. */
+  const settleCeiling = Number.isFinite(deps.settleCeilingMs) ? deps.settleCeilingMs : SETTLE_CEILING_MS;
 
   let state = 'running';
   let index = -1;
@@ -245,10 +519,15 @@ export function createBenchHost(deps) {
   let cursor = 0;               // the walk's waypoint cursor
   let swingAt = 0;              // when the next swing begins
   let sawBusy = false;         // the stream leg's witness: the journey actually started
+  let runRoute = null;          // the street leg's route, planned once off the town's own grid
+  let walk = null;              // the dungeon leg's route: the engine's own plan, followed waypoint by waypoint
+  let walkCursor = 0;           // and how far along it the body has walked
+  let damageAt = null;          // a fight leg's foe health when it began, for the damage proof at its end
   let report = null;
   let bot = null;
   let inputLock = null;         // the release of the player's hands, held for the life of the run
-  let tutorialWas = null;       // the tutorial pref as it stood before the run, put back at its end
+  let prepared = false;         // the run's one-shot preparation has happened
+  let bodyAt = NaN;             // when the run first looked for its character, for the wait's ceiling
   const run = [];               // the finished legs
   const failures = [];
 
@@ -299,34 +578,44 @@ export function createBenchHost(deps) {
       `dpr ${i.dpr ?? 1}`, `scale ${i.retro ? 'retro' : `${Math.round((i.scale ?? 1) * 100)}%`}`].filter(Boolean).join('  ');
   }
 
-  function begin() {
-    // THE PERSON IS OUT OF THE GAME, AND THE TUTORIALS ARE OFF (the owner's ask, 2026-10-19: "all
-    // the user input will be disabled until the benchmark end", "need disable tutorial"). Both are
-    // undone when the run ends, so the machine a person gets back is the one they left - the
-    // tutorial pref included, and the pointer lock given back by the browser's own gesture.
+  /** The one-shot preparation, before any leg: the person's hands off the game and the tutorials
+   *  off (both undone at the run's end, so the machine a person gets back is the one they left). */
+  function prepare() {
     inputLock = installInputLock();
-    tutorialWas = tutorialPopupsOn();
-    setTutorialPopups(false);
+    forcePref('tutorialPopups', false);   // the page's own force (main.js sets it too, before any host); no shelf write, so nothing to put back but the force
+    try { dismissTutorials(); } catch { /* a host with no tutorial cards */ }
     if (presetForced) deps.applyPreset(BENCH_PRESET);
-    // A CHARACTER-CREATION SCREEN IS NOT A SCENE. The standalone dungeon host does not mint its
-    // character from ?class= on this build (reproduced with no benchmark on the page at all), so
-    // the fights would have been measured over a wizard - the one thing a benchmark must never do
-    // is film a login screen and call it a frame. It fails by name instead.
-    // chargenDone is TRUE on a minted character and null or false while the wizard stands, so the
-    // test is the positive one - the first cut asked !== false, and a wizard whose flag is null
-    // walked straight past it (the dungeon page measured 220 draws of its own panel).
-    const bodyUp = (() => { try { const b = deps.entity?.(); return !b || b.chargenDone === true; } catch { return true; } })();
-    if (!bodyUp) {
-      failures.push('this page has no character - the character-creation screen is up (?class= does not mint one on the dungeon door in this build), so there is nothing to measure');
-      return finish();
+  }
+
+  /** THE CHARACTER, WAITED FOR AND THEN NAMED. `?class=` mints a body asynchronously on both doors,
+   *  and a page measured before it lands films the character-creation wizard - the one thing a
+   *  benchmark must never do. So the run WAITS for it (BODY_WAIT_MS, from the first frame the host
+   *  ticks) and, if it never appears, fails by name. The first cut checked once, on the first frame:
+   *  a machine busy with something else failed a run whose character was still arriving, which is a
+   *  lie about the game. `chargenDone` is TRUE on a minted character and null or false while the
+   *  wizard stands, so the test is the positive one - the first cut asked !== false, and a wizard
+   *  whose flag was null walked straight past it (the dungeon page measured 220 draws of its panel). */
+  function bodyReady() {
+    try { const b = deps.entity?.(); return !b || b.chargenDone === true; } catch { return true; }
+  }
+
+  function begin() {
+    if (!bodyReady()) {
+      if (!Number.isFinite(bodyAt)) bodyAt = clock();
+      if (clock() - bodyAt < BODY_WAIT_MS) return false;   // still minting: wait, measure nothing
+      failures.push(`this page has no character after ${Math.round(BODY_WAIT_MS / 1000)} s - ?class= did not mint one on this door, so there is nothing to measure`);
+      finish();
+      return false;
     }
     if (!armTheBody()) failures.push('the body could not be given its health pool - a fight leg may end the run with a corpse');
     if (!legs.length) {
       failures.push(`no leg of this page was asked for - bench=${deps.params?.get('bench') ?? '(none)'} plays nothing here`);
-      return finish();
+      finish();
+      return false;
     }
     index = 0;
     enter(legs[0].id);
+    return true;
   }
 
   function enter(id) {
@@ -340,12 +629,27 @@ export function createBenchHost(deps) {
     stamps = [];
     cursor = 0;
     swingAt = 0;
-    bot?.stop();
+    walk = null;
+    walkCursor = 0;
+    stopHands();
     // any window the game raised between legs - the opening quest box, a tutorial page, a
     // level-up - holds the motor, and a leg under a modal measures a paused game
     try { deps.quiet?.(); } catch { /* a host with no windows: nothing to close */ }
+    try { dismissTutorials(); } catch { /* no cards */ }
+    // THE TOWN'S CENTRE, not the road outside it: the crowd and the street are measured where the city
+    // is busiest, and the player was being left wherever the start marker put them.
+    if (id === 'crowd' || id === 'street') { try { deps.goTo?.(deps.centre?.()); } catch { /* a host with nowhere to stand */ } }
     try { deps.prepareLeg?.(id, api); } catch (err) { failures.push(`${leg.title}: the scene could not be prepared (${err?.message ?? err})`); }
+    // A FIGHT LEG'S PROOF OF A FIGHT: the foes' health as the leg found it. A leg that swings for
+    // twenty seconds and takes nothing off that number measured a body flailing, not combat, and
+    // says so at its end (see `endLeg`).
+    damageAt = FIGHT_IDS.includes(leg.id) && typeof deps.foeHealth === 'function' ? readFoeHealth() : null;
     card?.progress?.(id, 0);
+  }
+
+  /** The foes' total health, or null when this host has none to read. */
+  function readFoeHealth() {
+    try { const n = deps.foeHealth?.(); return Number.isFinite(n) ? n : null; } catch { return null; }
   }
 
   function censusOf(leg) {
@@ -383,6 +687,16 @@ export function createBenchHost(deps) {
         entry.notes.push(`the counter read ${st.fps ?? '?'} fps`);
       }
     } catch { /* no counter: the leg still has its own stamps */ }
+    // THE DAMAGE PROOF. Two runs of a fight leg must be comparable, and a leg whose blows never
+    // landed measured idle frames. So the foes' health is read again and the drop is REPORTED; a
+    // leg that took nothing off it is a named failure, because a benchmark cannot call that combat.
+    if (damageAt !== null) {
+      const now = readFoeHealth();
+      const dealt = now === null ? null : Math.max(0, damageAt - now);
+      entry.damage = dealt;
+      if (dealt !== null) entry.notes.push(`${dealt} point(s) of foe health taken by the leg's own blows`);
+      if (dealt === 0) failures.push(`${leg.title}: the leg swung and no blow landed - nothing was taken off the foes' health, so this measured a body flailing, not combat`);
+    }
     if (!s.frames) failures.push(`${leg.title}: no frame was measured - the leg held ${stamps.length} stamp(s)`);
     if (!judged.ok) failures.push(`${leg.title}: ${judged.why}`);
     run.push(entry);
@@ -392,12 +706,13 @@ export function createBenchHost(deps) {
     return enter(legs[index].id);
   }
 
-  /** Give the machine back: the hands, and the tutorials as they were. Called on every end -
-   *  the run's own, a failure's, and a Close - so a person is never locked out of their game. */
+  /** Give the machine back: the hands, and the page's forced tutorial switch. Called on every end -
+   *  the run's own, a failure's, and a Close - so a person is never locked out of their game. Nothing
+   *  is written to the shelf anywhere in here, so there is nothing of the player's to restore. */
   function handBack() {
     try { inputLock?.(); } catch { /* a listener already gone */ }
     inputLock = null;
-    if (tutorialWas !== null) { try { setTutorialPopups(tutorialWas); } catch { /* a store that refused the write */ } tutorialWas = null; }
+    clearForcedPref('tutorialPopups');
   }
 
   function finish() {
@@ -412,17 +727,24 @@ export function createBenchHost(deps) {
       failures: [...failures],
     };
     state = failures.length ? 'failed' : 'done';
-    bot?.stop();
+    stopHands();
     handBack();
     card?.finish?.(report);
     return report;
   }
 
+  /** EVERY END LETS THE HANDS GO - the keys AND the attack. A fight leg that finished mid-swing
+   *  would otherwise leave the host holding the mouse button: the next leg, or the player who comes
+   *  back after the run, would find a body swinging at nothing with no hand on it. */
+  function stopHands() {
+    bot?.stop();
+    try { deps.attack?.(false); } catch { /* a host with no attack door */ }
+  }
+
   /** The walk keys, pressed from the bindings the player has, or a named failure - a benchmark
    *  that pressed a key of its own while the player had rebound Walk Forward would measure
    *  nothing, quietly, on that player's machine only. */
-  function hands() {
-    if (bot) return bot;
+  function hands() {    if (bot) return bot;
     const codes = deps.codes?.() ?? null;
     if (!codes?.forward || !codes?.swing) return null;
     bot = createBenchBot({ codes, press: (c) => deps.press?.(c), release: (c) => deps.release?.(c), look: (r) => deps.turnBy?.(r) });
@@ -435,8 +757,17 @@ export function createBenchHost(deps) {
     const b = hands();
     if (!b) return 'the player\'s own bindings could not be read, so the bot has no hands (systems/inputActions.js codeForAction)';
     if (leg.id === 'street') {
-      const track = BENCH_TRACKS?.Daggerfall ?? null;
-      const ok = track ? validateTrack(track) : { ok: false, why: `no track is authored for Daggerfall - tools/benchTracks.mjs writes one` };
+      // THE ROUTE IS PLANNED IN THE GAME, once a run, off the town's own navigation grid
+      // (`deps.route`, systems/bench/route.js) - so the leg a person most wants to watch no longer
+      // waits for a route file another machine wrote. An authored track is the fallback for a host
+      // that cannot plan one, and `tools/benchTracks.mjs` still writes those.
+      if (!runRoute) {
+        let planned = null;
+        try { planned = deps.route?.() ?? null; } catch { planned = null; }
+        runRoute = Array.isArray(planned) && planned.length > 1 ? planned : (BENCH_TRACKS?.Daggerfall ?? null);
+      }
+      const track = runRoute;
+      const ok = track ? validateTrack(track) : { ok: false, why: 'the town offered nowhere to walk (no navigation grid where the player stands) - `npm run tracks --headed` can author a route instead' };
       if (!ok.ok) return ok.why;
       const next = nextWaypoint(track, at, cursor);
       cursor = next.index;
@@ -444,10 +775,39 @@ export function createBenchHost(deps) {
       return null;
     }
     if (leg.id === 'dungeon') {
-      // no route is authored for a dungeon yet: the walk is a walk - straight ahead along the
-      // camera, through the dungeon's own collider, which is what a player does in a room
-      const ahead = [at[0] + Math.sin(h) * DUNGEON_AHEAD_M, at[1], at[2] + Math.cos(h) * DUNGEON_AHEAD_M];
-      b.steer({ at, heading: h, target: ahead, dt });
+      // THE DUNGEON WALKED, ON THE DUNGEON'S OWN MESH. A corridor is not a straight line: the first
+      // real run held forward and walked into the first wall it met, and reported the wall's frame
+      // rate as the dungeon's. So the walk is a ROUTE - the engine's own `findPath` over the same
+      // navmesh the foes path on (`deps.plan`), taken to a destination that is actually reachable,
+      // and followed waypoint by waypoint. When the route runs out the leg plans the next one from
+      // where the body stands, so the leg walks as long as it lasts.
+      if (!walk) {
+        const plan = deps.plan ?? null;
+        if (!plan) return 'this page offers no dungeon route (its host wired no navmesh plan), so the walk has nowhere to be planned';
+        // FURTHEST FIRST: a walk that ends two metres away is not a walk. The destination is a live
+        // foe - the only guaranteed-connected point in a dungeon - and the plan is what proves it.
+        const goals = (deps.foes?.() ?? [])
+          .map((f) => foeFeet(f))
+          .filter(Boolean)
+          .sort((a, c) => distanceTo(at, c) - distanceTo(at, a));
+        try { walk = pickWalk({ plan, from: [...at], goals }); } catch (err) {
+          return `the dungeon's own path query refused to answer (${err?.message ?? err}) - nothing to walk on`;
+        }
+        if (!walk) {
+          // TWO DIFFERENT TRUTHS, NAMED APART: a mesh that never landed (the page can say - its own
+          // `navReady`) is not a mesh with no way across the floor, and a reader who is told the
+          // wrong one chases the wrong bug.
+          const meshHere = typeof deps.navReady === 'function' ? !!deps.navReady() : true;
+          return meshHere
+            ? `the dungeon offered no route to walk (${goals.length} destination(s) tried) - the navmesh its foes path over does not reach this body's floor`
+            : 'the dungeon\'s navmesh never landed (no foe AI answered one), so the walk had no floor to be planned on';
+        }
+        walkCursor = 0;
+      }
+      const step = advancePath(walk.points, walkCursor, at);
+      walkCursor = step.index;
+      if (step.done) walk = null;   // the route is behind us: plan the next one from here
+      else if (step.target) b.steer({ at, heading: h, target: step.target, dt });
       return null;
     }
     if (leg.id === 'crowd') {
@@ -455,20 +815,63 @@ export function createBenchHost(deps) {
       deps.turnBy?.(SWEEP_RAD_S * dt);
       return null;
     }
-    // blade, bow, spell: face the nearest foe, close if he is far, and swing on the cadence.
-    // THE PRESS IS ONE PRESS: the host's ladder runs magic.interceptAttack first and
-    // weaponRig.attackInput otherwise, so the bow and the spell need no code of their own.
-    const foe = deps.foeAt?.() ?? null;
-    if (foe) {
-      const dx = foe[0] - at[0];
-      const dz = foe[2] - at[2];
-      const delta = turnTo(Math.atan2(dx, dz), h);
-      if (Math.abs(delta) > 0.1) deps.turnBy?.(Math.max(-0.12, Math.min(0.12, delta)));
-      if (Math.hypot(dx, dz) > 4) b.steer({ at, heading: h, target: foe, dt });
-      else b.steer({ at, heading: h, target: [at[0], at[1], at[2]], dt });
+    // THE STREAM LEG PRESSES NOTHING: its subject is the journey's own settle, and a leg that also
+    // walked or swung would measure two things at once (it used to fall through to the fight branch
+    // and swing at a page with no foes at all).
+    if (!FIGHT_IDS.includes(leg.id)) return null;
+    // blade, bow, spell: THE RING OF FOES. Close on the nearest live one, face it, swing on the
+    // cadence - and the press is the host's OWN attack door (`deps.attack`), because the swing is a
+    // MOUSE edge: on this host `SwingWeapon` answers `Mouse1`, the per-frame latch skips mouse
+    // codes, and a synthetic KeyboardEvent naming one reaches nothing (that is why the first real
+    // run's fights were a body standing still, swinging at the air).
+    const foes = deps.foes?.() ?? [];
+    const foe = nearestFoe(foes, at, FOE_REACH_M);
+    if (!foe) {
+      return foes.length
+        ? `the ${foes.length} foe(s) of this dungeon are all further than ${FOE_REACH_M} m from where the leg stands - a fight has to be stood in`
+        : 'this dungeon holds no living foe to fight (the scene was built without them, or the leg has already killed them all)';
     }
+    const feet = foeFeet(foe);
+    // A WEAPON THAT NEVER CAME OUT IS NOT A MISS. The rig refuses every blow behind `sheathed`, so a
+    // leg whose draw was refused swings nothing at all - and "no blow landed" would send a reader
+    // looking at reach and aim when the real answer is that the hand was empty. The page can say
+    // (`deps.drawn` is the rig's own Sheathed), so the leg says it.
+    if (leg.id !== 'spell' && typeof deps.drawn === 'function' && !deps.drawn()) {
+      return `its weapon never came out of its sheath - the rig refused all ${DRAW_TRIES} draw attempts, so every press was a blow at nothing`;
+    }
+    const dx = feet[0] - at[0];
+    const dz = feet[2] - at[2];
+    const dist = Math.hypot(dx, dz);
+    // AIM, DON'T JUST TURN: a missile leaves along the camera's forward vector, so the PITCH matters
+    // as much as the yaw - a level look at a foe whose mid-capsule is below the eye looses the arrow
+    // over its head, which is why the bow and spell legs took nothing off the health they were
+    // measured against. The host's own look door (`deps.aimAt`) sets both; a host without one gets
+    // the incremental yaw turn it always had.
+    if (typeof deps.aimAt === 'function') {
+      try { deps.aimAt(foeCentre(foe) ?? feet); } catch { /* a host whose look refused */ }
+    } else {
+      const delta = turnTo(aimYaw(at, feet), h);
+      if (Math.abs(delta) > 0.1) deps.turnBy?.(Math.max(-0.12, Math.min(0.12, delta)));
+    }
+    // inside the weapon's reach the body stops and swings; outside it, it closes the distance first
+    if (dist > FIGHT_CLOSE_M) b.steer({ at, heading: h, target: feet, dt });
+    else b.steer({ at, heading: h, target: [at[0], at[1], at[2]], dt });
     b.tick(clock());
-    if (clock() >= swingAt) { b.startSwing(clock(), SWING_MS); swingAt = clock() + SWING_EVERY_MS; }
+    const hold = leg.id === 'bow' ? BOW_DRAW_MS : SWING_MS;
+    const every = hold + (leg.id === 'bow' ? 300 : SWING_EVERY_MS - SWING_MS);
+    // EACH BLOW IS ARMED BEFORE IT IS PRESSED. A readied spell is SPENT by its cast, so a leg that
+    // readied one spell at its start threw one spell and then fought with an empty hand for the rest
+    // of its twenty seconds - one whiffed cast and the leg proves nothing. The host owns what
+    // "arming" means for the weapon in hand (`deps.rearm`: the spell leg's is a ready, and a blade's
+    // is nothing at all); a host with no such door is unaffected.
+    if (clock() >= swingAt) {
+      try { deps.rearm?.(); } catch { /* a host whose arming refused: the blow still swings */ }
+      b.startSwing(clock(), hold);
+      swingAt = clock() + every;
+    }
+    // the press is HELD while the bot holds the swing and released when it lets go: the bow needs
+    // the release to fire, and every weapon needs the held state the mouse would give it
+    deps.attack?.(!!b.swinging);
     return null;
   }
 
@@ -478,14 +881,17 @@ export function createBenchHost(deps) {
     tick(dt, now) {
       const at = Number.isFinite(now) ? now : clock();
       if (state !== 'running') return;
-      if (index < 0) { begin(); if (state !== 'running') return; }
+      if (index < 0) {
+        if (!prepared) { prepared = true; prepare(); }   // the hands and the tutorials, once per run
+        if (!begin() || state !== 'running') return;      // the character may still be minting
+      }
       const leg = legs[index];
       if (!leg) return;
       if (phase === 'settle') {
         // the stream's own test (this host's `__streamIdle`): the queue empty, nothing building,
         // nothing in flight. A host with no stream says so by answering true.
         const idle = deps.settle ? !!deps.settle() : true;
-        if (idle || at - phaseAt >= SETTLE_CEILING_MS) { phase = 'warmup'; phaseAt = at; stamps = []; }
+        if (idle || at - phaseAt >= settleCeiling) { phase = 'warmup'; phaseAt = at; stamps = []; }
         return;
       }
       if (phase === 'warmup') {
@@ -528,14 +934,14 @@ export function createBenchHost(deps) {
     },
     /** The run's own stop, for the card's Close and for the CLI's teardown. */
     stop() {
-      bot?.stop();
+      stopHands();
       if (state === 'running') {
         failures.push('the run was stopped before it finished');
         finish();
       }
     },
     dispose() {
-      bot?.stop();
+      stopHands();
       handBack();
       card?.dispose?.();
       const w = globalThis.window;

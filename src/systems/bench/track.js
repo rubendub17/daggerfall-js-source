@@ -14,7 +14,7 @@
 // whole point of measuring this game and not a harness.
 //
 // YAW IS THE CAMERA'S. Every host reads the look as [sin(yaw), cos(yaw)]
-// (world.js:"noteLocalPlayer(walkMode ? player.pos : cam.pos, [Math.sin(cam.yaw), 0, Math.cos(cam.yaw)])"),
+// (world.js:"noteLocalPlayer(walkMode && playerSpawned ? player.pos : cam.pos, fwd)"),
 // so the bearing to a point is atan2(dx, dz), and what the bot owes the look
 // is that bearing less the heading it already has, wrapped to (-PI, PI].
 // Everything here is horizontal: a waypoint on a stair's landing is reached

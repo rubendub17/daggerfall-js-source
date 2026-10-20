@@ -57,7 +57,7 @@ test('BENCH1 every leg has a census key and a positive window: the frame legs 5 
 });
 
 test('BENCH1 the pins and the preset: the same place, hour, weather, seed and class on every run, and the quality it forces named by six keys it records', () => {
-  assert.deepEqual({ ...BENCH_PINS }, { region: 'Daggerfall', loc: 'Daggerfall', tod: '12:00', weather: 'sunny', wseed: 1, classId: 16 });
+  assert.deepEqual({ ...BENCH_PINS }, { region: 'Daggerfall', loc: 'Daggerfall', tod: '12:00', weather: 'sunny', wseed: 1, classId: 16, dungeon: "Privateer's Hold" });
   assert.ok(Object.isFrozen(BENCH_PINS));
   assert.equal(new URL(`/play/?tod=${encodeURIComponent(BENCH_PINS.tod)}`, 'https://dfo.example').searchParams.get('tod'), '12:00',
     'the game parses tod back to noon - the spelling is parseTimeOfDay\'s, not the URL\'s');
@@ -137,9 +137,16 @@ test('BENCH1 the dungeon page: its own scene door, its own legs, and the same tw
   assert.equal(q.get('class'), '16', 'the same character on both pages, or the two halves measure two games');
   assert.equal(q.has('shot'), true, 'the probe surface the legs read');
   assert.equal(q.has('play'), true, 'and the motor on - a shot boot with no play is a flying camera');
-  assert.equal(q.has('region'), false, 'the dungeon host reads no region: a parameter it ignores is a lie about what was pinned');
+  // BOTH PAGES PIN THEIR PLACE. The dungeon host reads `?region` and `?dungeon` as the NAMES of a
+  // MAPS.BSA location (scenes/dungeon.js), and a dungeon's floor plan is data, not a sample - so the
+  // walked floor is the same floor on every machine, and a run that does not name it could not be
+  // repeated. The town's `?loc`, `?tod`, `?weather` and `?wseed` are the world page's own doors and
+  // it still reads none of those.
+  assert.equal(q.get('region'), BENCH_PINS.region, 'the region the dungeon is named in');
+  assert.equal(q.get('dungeon'), BENCH_PINS.dungeon, 'and the dungeon by name - the first one every player starts in');
   assert.equal(q.has('loc'), false);
   assert.equal(q.has('tod'), false);
+  assert.equal(q.has('wseed'), false);
   assert.equal(/[?&]class=/.test(url), true);
   assert.equal(/[?&]online\b/.test(url), false);
   assert.equal(benchUrl({ scene: 'dungeon', asIs: true }), `${url}&benchpreset=off`);

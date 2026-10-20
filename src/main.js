@@ -44,7 +44,7 @@ import { installCursor } from './ui/cursor.js';
 import { mountFpsCounter } from './ui/fpsCounter.js';   // FPS1: the counter, over every host
 import { installFramePacer } from './systems/frameCap.js';   // FPS-VSYNC (AUDIT 28e): the desktop app's lifted wait, paced by the cap
 import { setScreenshotCanvas } from './ui/screenshot.js';   // KB1: the PrintScreen action's canvas - the key itself is routed by the hosts (AUDIT KB1)
-import { getPref } from './systems/uiPrefs.js';   // FPS1: its switch
+import { getPref, forcePref } from './systems/uiPrefs.js';   // FPS1: its switch - and BENCH1's volatile force
 import { publishBootParams, BOOT_DOOR_KEYS } from './systems/online/onlineLane.js';   // MAC-N3: the boot's params are the URL, or the online lane reads nothing
 // The deployed site is redeployed several times a day and every deploy
 // renames chunks, so a page held open across one is holding a map of a
@@ -62,6 +62,24 @@ async function boot() {
   renderer.setRetroSource(retroFrameConfig);   // RETRO1: DFU's retro mode - asked once per world frame, so the settings screen's change lands on the next
   renderer.setRenderScaleSource(renderScaleSetting);   // PERF-SCALE: the world's share of the window's pixels - asked once per world frame, and retro wins
   const params = new URLSearchParams(location.search);
+  // BENCH1 (2026-10-19): THE TUTORIAL POPUPS OFF FOR A MODE THAT HAS NO HAND TO PUT THEM AWAY.
+  // The benchmark plays the game by itself with the player's input locked out, and a tutorial card
+  // is read on DISMISSAL - so one page stands over the whole run and the owner sees a help box for
+  // a game nobody is touching. Forced HERE, one line after the doors are read and before any host
+  // is imported: at that instant nothing is queued, so `tutorialDue()` answers false at every
+  // `noteFirstUse` seam and the card is never built - rather than painted and then taken away, the
+  // shape that left one standing during the boot (the welcome tour is queued 350 ms into
+  // `bootWorld`, long before the benchmark's first tick). It is a FORCE and not a shelf write
+  // (`uiPrefs.forcePref`), so the player's own switch is not touched by a run. `?notutorial` is
+  // the same door by hand, for a probe or a screenshot that wants the scene bare.
+  if (params.has('bench') || params.has('notutorial')) forcePref('tutorialPopups', false);
+  // BENCH1: AND THE TWO SWITCHES THE LEGS THEMSELVES DEPEND ON, for the same reason and by the same
+  // means. `enhancedAI` is what bakes the dungeon's navmesh - the surface the foes path over and the
+  // benchmark walks on - and `livingWorld` is what puts a crowd on the city's streets rather than
+  // DFU's classic pool. A run whose numbers depend on which of those a machine happened to have on
+  // is not comparable with another machine's run, so a benchmark page forces both ON, records them
+  // (the card's `preset` line), and writes nothing to the player's shelf.
+  if (params.has('bench')) { forcePref('enhancedAI', true); forcePref('livingWorld', true); }
   // L10N1b: THE LANGUAGE FIRST. Every door below - the cinematic, the front door, the classic start, a probe's scene -
   // draws text, so the chosen language's tables are patched in before any of them runs (?lang= for one visit, else
   // the player's choice). A failure leaves English standing; nothing here can stop the game. Loaded behind a door

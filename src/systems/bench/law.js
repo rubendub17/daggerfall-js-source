@@ -87,12 +87,10 @@ export const BENCH_VITAL = Object.freeze({ maxHealth: 1000000, health: 1000000 }
  * An entry comes OUT of this list in the change that wires its door, never by deleting the leg.
  */
 export const BENCH_UNWIRED = Object.freeze({
-  street: 'its route is authored on a machine with the data - `npm run tracks --headed` writes one',
-  stream: 'the map journey it measures needs a destination pick, and this build\'s door opens the map, not a trip',
-  blade: 'the dungeon door never mints its character in this build (?class= is not applied on it - reproduced with no benchmark on the page), so the page stands on the character-creation screen',
-  bow: 'the dungeon door never mints its character in this build (see the blade leg)',
-  spell: 'the dungeon door never mints its character in this build (see the blade leg)',
-  dungeon: 'the dungeon door never mints its character in this build (see the blade leg)',
+  // EMPTY AS OF 2026-10-19, EVENING. Every leg's door is wired: the street's route is planned in the
+  // game off the town's own navigation grid (`systems/bench/route.js`), the stream's journey builds a
+  // neighbouring pixel, and the dungeon door now mints its character (`scenes/dungeon.js`). An entry
+  // goes back here only when a door this build offers stops existing - and it says why, in a sentence.
 });
 
 /** The legs a page plays. `scene` is 'world' or 'dungeon'; anything else answers none. */
@@ -106,6 +104,10 @@ export function legsOf(scene) {
  *  plain human male a run can compare across machines. */
 export const BENCH_PINS = Object.freeze({
   region: 'Daggerfall', loc: 'Daggerfall', tod: '12:00', weather: 'sunny', wseed: 1, classId: 16,
+  // the dungeon page's place: the game's own first dungeon. A dungeon's layout is read out of
+  // MAPS.BSA by NAME (scenes/dungeon.js), never sampled, so this name is what makes the walked
+  // floor the same floor on every machine - and Privateer's Hold is the one every player starts in.
+  dungeon: "Privateer's Hold",
 });
 
 /** THE PRESET A RUN FORCES AND THE RESULT RECORDS: the host applies exactly
@@ -150,7 +152,7 @@ export function parseLegs(value) {
  *
  *   scene 'world' (the default) - `<base>/play/?world&bench=<ids>&class=16&region=...&loc=...&tod=...
  *   &weather=...&wseed=...&shot&play&fps&perf`
- *   scene 'dungeon' - `<base>/play/?dungeon&bench=<ids>&class=16&shot&play&fps&perf`
+ *   scene 'dungeon' - `<base>/play/?dungeon&bench=<ids>&class=16&region=...&dungeon=...&shot&play&fps&perf`
  *
  * `&shot&play` on BOTH is deliberate and is the perf discipline the profiler already uses
  * (tools/cpuReport.mjs's own SCENES): `?shot` installs the probe surface the legs read and
@@ -175,10 +177,14 @@ export function benchUrl({ base = '', legs = BENCH_LEG_IDS, asIs = false, scene 
   if (!ids.length) ids = playable;
   const root = (typeof base === 'string' ? base : '').replace(/\/+$/, '');
   const enc = (v) => encodeURIComponent(String(v));
-  const query = [where, `bench=${ids.join(',')}`, `class=${enc(BENCH_PINS.classId)}`];
-  // the world page is a PLACE, and its place is pinned; the dungeon page takes no region, loc,
-  // hour or seed - the standalone dungeon host reads none of them, and a parameter a page
-  // ignores is a lie about what was held constant
+  const query = [where === 'dungeon' ? `dungeon=${enc(BENCH_PINS.dungeon)}` : 'world', `bench=${ids.join(',')}`, `class=${enc(BENCH_PINS.classId)}`];
+  // BOTH PAGES ARE A PLACE, AND BOTH PLACES ARE PINNED. The world page reads `?loc=`, `?region=`,
+  // its hour and its seed; the dungeon page reads `?dungeon=` and `?region=` as the NAME of a
+  // MAPS.BSA location (scenes/dungeon.js: `params.get('dungeon') || "Privateer's Hold"`) - and a
+  // dungeon's floor plan is DATA, not a sample: the same name is the same blocks on every machine
+  // with the same install. So the dungeon's venue is named here too, and named as the FIRST dungeon
+  // (`BENCH_PINS.dungeon`), because "a dungeon nobody can name" is a benchmark nobody can repeat.
+  // A parameter a page ignores is a lie about what was held constant - these are read.
   if (where === 'world') {
     query.push(
       `region=${enc(BENCH_PINS.region)}`,
@@ -187,6 +193,8 @@ export function benchUrl({ base = '', legs = BENCH_LEG_IDS, asIs = false, scene 
       `weather=${enc(BENCH_PINS.weather)}`,
       `wseed=${enc(BENCH_PINS.wseed)}`,
     );
+  } else {
+    query.push(`region=${enc(BENCH_PINS.region)}`);
   }
   query.push('shot', 'play', 'fps', 'perf');
   const url = `${root}/play/?${query.join('&')}`;
