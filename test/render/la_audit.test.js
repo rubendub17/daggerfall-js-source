@@ -67,7 +67,7 @@ function f16(x) {
 /** Two rooms of floor quads 200 units apart, their textures alternating so every texture group spans both rooms (the
  *  dungeon's shape: one sub-mesh per texture, each across the level). */
 function twoRooms({ cells = true } = {}) {
-  const b = new StaticBatchBuilder(cells ? { shadowCell: SHADOW_CELL_SIZE } : {});
+  const b = new StaticBatchBuilder(cells ? { shadowCell: SHADOW_CELL_SIZE, litCells: true } : {});   // EARLY-CULL: `litCells` is the page's own door - the pin asks for the cut explicitly
   const quad = (x, z) => ({
     positions: new Float32Array([x, 0, z, x + 4, 0, z, x + 4, 0, z + 4, x, 0, z + 4]), normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0]),
     uvs: new Float32Array(8), indices: new Uint32Array([0, 1, 2, 0, 2, 3]), subMeshes: [{ textureArchive: 0, textureRecord: 0, startIndex: 0, primitiveCount: 2 }],
@@ -112,16 +112,19 @@ test('LA-AUDIT A1: THE LEVEL\'S SHADOW CELLS - the batch\'s triangles again, sor
   calls.length = 0;
   const mesh = r.createMesh(m);
   const data = calls.filter((c) => c[0] === 'bufferData');
-  assert.equal(data.length, 5, 'three vertex buffers, the lit indices, the cells\' indices');
+  assert.equal(data.length, 6, 'three vertex buffers, the lit indices, the cells\' indices, and EARLY-CULL\'s lit cells\' own');
   assert.deepEqual([...data[4][2]], [...m.shadowIndices], 'the cells\' buffer');
   assert.ok(mesh.shadowVao && mesh.shadowVao !== mesh.vao, 'a VAO of its own');
+  assert.deepEqual([...data[5][2]], [...m.cellIndices], 'EARLY-CULL: the lit pass\'s per-picture cell runs');
+  assert.ok(mesh.cellVao && mesh.cellVao !== mesh.vao && mesh.cellVao !== mesh.shadowVao, 'a VAO of its own, as the cells\'');
   const vap = calls.filter((c) => c[0] === 'vertexAttribPointer').map((c) => c.slice(1).join());
-  assert.equal(vap.length, 6);
-  assert.deepEqual(vap.slice(3), vap.slice(0, 3), 'the second VAO over the same three buffers, in the same layout');
+  assert.equal(vap.length, 9);
+  assert.deepEqual(vap.slice(3, 6), vap.slice(0, 3), 'the second VAO over the same three buffers, in the same layout');
+  assert.deepEqual(vap.slice(6), vap.slice(0, 3), 'and EARLY-CULL\'s over them too');
   assert.ok(mesh.shadowVao && mesh.shadowCells.length === m.shadowCells.length && mesh.shadowCells.every((c) => c._bounds?.length === 4 && c._bounds[3] > 0));
   calls.length = 0;
   r.destroyMesh(mesh);
-  assert.deepEqual(calls.filter((c) => c[0] === 'deleteVertexArray').map((c) => c[1]), [mesh.vao, mesh.shadowVao]);
+  assert.deepEqual(calls.filter((c) => c[0] === 'deleteVertexArray').map((c) => c[1]), [mesh.vao, mesh.shadowVao, mesh.cellVao], 'both cell VAOs freed with the mesh\'s own');
   assert.match(rd('src/scenes/dungeonContext.js'), /const staticBuilder = new StaticBatchBuilder\(\{ shadowCell: SHADOW_CELL_SIZE \}\);/);
 });
 

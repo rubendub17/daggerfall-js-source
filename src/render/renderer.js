@@ -28,6 +28,19 @@ const NO_SCREEN_OFFSET = Object.freeze([0, 0]);
  *  kernel and the fragment's sun term both vanish. A MEASUREMENT door: the picture loses the sun on every flat card, and
  *  the world zone's drop is the ceiling of what that read costs. Read once a page, like every other door. */
 const FLAT_SUN_OFF = (() => { try { return /[?&]flatsun=off/.test(globalThis.location?.search ?? ''); } catch { return false; } })();
+/** EARLY-CULL (2026-10-20): `?cells=on` lets the LIT pass drop a static level's cells the frame's frustum cannot see
+ *  (staticBatch.js cellRunsBySubMesh; the same door the builder reads). OFF by default, and it is PLUMBING, not a win:
+ *  measured, the cell cut turns 79 sub-mesh draws into 1,770 to drop triangles the GPU already clips for free, so the
+ *  draw path only splits a sub-mesh when it hides most of it (_drawMeshBundle's threshold). What it is for is the
+ *  occlusion cull that can stand on it. */
+const CELLS_ON = cellsRequested();
+/** EARLY-CULL: a model matrix that places nothing - the only one a cell cull may trust, since a run's sphere is in the
+ *  merge's own space and the frame's planes are in the world's. */
+const isIdentity = (m) => m[0] === 1 && m[1] === 0 && m[2] === 0 && m[3] === 0 && m[4] === 0 && m[5] === 1 && m[6] === 0 && m[7] === 0
+  && m[8] === 0 && m[9] === 0 && m[10] === 1 && m[11] === 0 && m[12] === 0 && m[13] === 0 && m[14] === 0 && m[15] === 1;
+/** EARLY-CULL: a sub-mesh is split into its runs only when the ones that pass hide at least this share of it - below it
+ *  the extra submissions cost more than the triangles saved (the critic's measure: 1,770 draws for 61% of the geometry). */
+const CELL_SPLIT_MIN = 0.25;
 /** DRAW-SITES: every family a draw site increments, seeded by name in beginFrame - the one list the reset and the line
  *  both speak (a key missing here reads NaN through `| 0`, a silent zero in the census). */
 // DRAW-SITES: every family a draw site increments, seeded by name in beginFrame. `flatQuads` and `meshTris` are the
@@ -719,7 +732,8 @@ export function bbVertexShader(ext = null) {
 
 import { createClusterSpace, buildLightClusters, CLUSTER_GRID_W, CLUSTER_GRID_H, CLUSTER_LIST_W, CLUSTER_LIST_ROWS, CLUSTER_X, CLUSTER_Y, CLUSTER_NEAR, CLUSTER_Z_SCALE, CLUSTER_GRID_UNIT, CLUSTER_LIST_UNIT } from './lightClusters.js';   // LC1: the lantern loop's grid
 import { ShadowPass, SHADOW_GLSL, SHADOW_VIEW_SCALE } from './shadowPass.js';   // EL7: the receiver block, for the water surface's lane program
-import { boundsOf, spherePlanes, batchVisible, batchSphere, ZERO_ORIGIN, placementGrid, quadHalfDiagonal } from './bounds.js';   // PERF-EXT1: and a batch's placement grid; the review: and the half-diagonal's one home
+import { boundsOf, spherePlanes, sphereInPlanes, batchVisible, batchSphere, ZERO_ORIGIN, placementGrid, quadHalfDiagonal } from './bounds.js';   // PERF-EXT1: and a batch's placement grid; the review: and the half-diagonal's one home   // EARLY-CULL: and the sphere test the cell cull asks
+import { cellsRequested } from './staticBatch.js';   // EARLY-CULL: the one reader of `?cells=on` - the builder reads the same one
 import { billboardKey, sortByKey } from './billboardKey.js';   // AUDIT 68 S16-bbkey-stale-shadow-reach: the batch's texture key - one home with the two replays; LA-COST2: and the cutout pass's sort by it
 import { cullDisabled } from './frustum.js';   // PERF-CROWD2: the billboard pass culls for every host, so no host can forget to
 import { getPref } from '../systems/uiPrefs.js';   // GRAIN2: the ground-sharpness dial, read where the tile array is built
@@ -1685,6 +1699,12 @@ export class Renderer {
     this._meshPlainOk = false;
     this._meshHold = 0;   // ...and a translucent draw holds the program it sent its share to (_drawTranslucent)
     this._frameP = new Float32Array(16); this._frameV = new Float32Array(16); this._frameL = new Float32Array(3);
+    // EARLY-CULL: the lit pass's cell cull - on only when the page asks (`?cells=on`), its frustum planes rebuilt once a
+    // frame, and the stamp they belong to (a draw outside a beginFrame culls nothing rather than culling on stale planes).
+    this._cellsOn = CELLS_ON;
+    this._cellPv = new Float32Array(16);
+    this._cellPlanes = new Float32Array(24);
+    this._cellPlanesAt = -1;
     this._laneSet = null;    // the lane's compiled set, kept across a swap back and forth
     this._exposure = 1;      // the lane's exposure (EL1); inert on the classic set
     this._shadows = null;    // EL2: the ShadowPass while a lane that asks for shadows is installed
@@ -1723,7 +1743,7 @@ export class Renderer {
     this.maxPointLights = CLASSIC_MAX_LIGHTS;
     this._decA = new Float32Array(3); this._decB = new Float32Array(3); this._decC = new Float32Array(3);   // AUDIT F4: three, because one site decodes the ambient, the moon AND the sun and holds all three   // EL1: the decode scratch (two, for the billboard tint's two terms)
     this._pointColorDec = new Float32Array(CLASSIC_MAX_LIGHTS * 3);
-    this.stats = { draws: 0, programBinds: 0, vaoBinds: 0, texBinds: 0, bbCulled: 0, spriteBinds: 0, viewDraws: 0, shadowDraws: 0 };   // PERF-CROWD2: bbCulled, the billboards this frame did NOT submit; MWNPC2: spriteBinds, the body batch's binds of the sprite target; MWNPC1: made before the first world set is built - its character program is bound through _use there
+    this.stats = { draws: 0, programBinds: 0, vaoBinds: 0, texBinds: 0, bbCulled: 0, cellsCulled: 0, spriteBinds: 0, viewDraws: 0, shadowDraws: 0 };   // PERF-CROWD2: bbCulled, the billboards this frame did NOT submit; MWNPC2: spriteBinds, the body batch's binds of the sprite target; MWNPC1: made before the first world set is built - its character program is bound through _use there
     // FIELD BUGS 2026-10-18 PASS-COUNT: THE FRAME'S OTHER PASSES, COUNTED (viewDraws, shadowDraws). The view out
     // (outsideViewFrame) draws the street BEFORE the room's beginFrame, whose reset lost its draws, and the shadow maps kept
     // their own count - so a building's overlay read "draws 67" over a frame that drew a city's street through the glass
@@ -5521,7 +5541,7 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     // LA-AUDIT A1: a static batch's shadow cells (staticBatch.js shadowCells) - the same triangles by grid cell, in their
     // own index buffer on a second VAO over the same three vertex buffers (_ensureWireMesh's shape). Only the shadow
     // replays bind it; each cell's sphere is measured here, as the sub-meshes' are below.
-    let shadowVao = null, shadowCells = null;
+    let shadowVao = null, shadowCells = null, cellVao = null;
     if (model.shadowIndices) {
       shadowVao = gl.createVertexArray();
       this._bindVao(shadowVao);
@@ -5533,13 +5553,25 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
       buf(gl.ELEMENT_ARRAY_BUFFER, model.shadowIndices);
       shadowCells = model.shadowCells.map((c) => ({ ...c, _bounds: boundsOf(model.positions, model.shadowIndices, c.startIndex, c.primitiveCount * 3) }));
     }
+    // EARLY-CULL (2026-10-20): the LIT pass's own cell buffer - the same three vertex buffers over the per-picture cell
+    // runs (staticBatch.js cellRunsBySubMesh), so a draw can skip whole cells. A second VAO, exactly as the shadow's.
+    if (model.cellIndices) {
+      cellVao = gl.createVertexArray();
+      this._bindVao(cellVao);
+      for (let a = 0; a < 3; a++) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers[a]);
+        gl.enableVertexAttribArray(a);
+        gl.vertexAttribPointer(a, a === 2 ? 2 : 3, gl.FLOAT, false, 0, 0);
+      }
+      buf(gl.ELEMENT_ARRAY_BUFFER, model.cellIndices);
+    }
 
     this._bindVao(null);
     // EL5: the bounds the shadow replays cull by - the mesh's sphere and one
     // per sub-mesh (a static batch is a whole block in one mesh; its walls
     // are its sub-meshes). Local space; the record transforms them.
     const bounds = measured ? measured.whole : boundsOf(model.positions);
-    const subMeshes = model.subMeshes.map((sm, i) => ({ ...sm, _bounds: measured ? measured.subs[i] : boundsOf(model.positions, model.indices, sm.startIndex, sm.primitiveCount * 3) }));
+    const subMeshes = model.subMeshes.map((sm, i) => ({ ...sm, _runs: model.cellRuns?.[i] ?? null, _bounds: measured ? measured.subs[i] : boundsOf(model.positions, model.indices, sm.startIndex, sm.primitiveCount * 3) }));
     // HOTFIX 2026-08-31 (field crash, Firefox): the sub-meshes are
     // COPIED, never shared with the model. drawMesh's EV2 texture
     // cache stamps `_evTex`/`_evGen`/... onto each sub-mesh, and the
@@ -5558,6 +5590,7 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     // draws nothing), which is the honest answer for a hand-built one.
     const bundle = /** @type {any} */ ({ vao, subMeshes, buffers, triIndices: model.indices, bounds });
     if (shadowVao) { bundle.shadowVao = shadowVao; bundle.shadowCells = shadowCells; }   // LA-AUDIT A1
+    if (cellVao) bundle.cellVao = cellVao;   // EARLY-CULL: the lit pass's per-cell index buffer
     return bundle;
   }
 
@@ -5692,10 +5725,18 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     this._view = view;
   }
 
+  /** EARLY-CULL: the lit pass's cell cull asks the frame's frustum, and nothing else. A LINE OF SIGHT WAS TRIED AND IS NOT
+   *  HERE: at 16-unit cells a room's own floor and ceiling occupy the cells a sight line passes through, so an occupancy
+   *  test called every sight line in a room blocked - it was wrong, not conservative. Real occlusion needs either the
+   *  level's aperture graph or software occlusion, both of their own change. */
+  _cellVisible(run) {
+    return sphereInPlanes(this._cellPlanes, run.cx, run.cy, run.cz, run.r);
+  }
+
   beginFrame(proj, view, lightDir, opts = null) {
     this._close2D();   // PERF-2D: the baseline back, before anything that needs it
     const s = this.stats;
-    s.draws = 0; s.programBinds = 0; s.vaoBinds = 0; s.texBinds = 0; s.bbCulled = 0; s.shadowDraws = 0;   // PERF-CROWD2; PASS-COUNT
+    s.draws = 0; s.programBinds = 0; s.vaoBinds = 0; s.texBinds = 0; s.bbCulled = 0; s.shadowDraws = 0; s.cellsCulled = 0;   // PERF-CROWD2; PASS-COUNT; EARLY-CULL: the triangles the frame's frustum dropped, when that door is on
     // DRAW-SITES (2026-10-19): WHERE the frame's draws went, so `draws 1226` stops being one number. `flat` is the
     // billboard pass's, with the texture binds and the origin uploads beside it (a run of ONE is a draw no multi-draw
     // could merge); `mesh` a bundle's sub-mesh, `terr` a ground pixel, `water` a sea row or a dungeon quad, `screen` a
@@ -5768,6 +5809,9 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     this._ripples = null;   // AUDIT WATER-NEXT G12: no ripple field but the one a host hands over this frame
     this._snowRise = 0;   // SNOW-TELL: and the snow's height over the ground - drawSnow's, on a frame that draws it
     this._meshFrame(proj, view, lightDir);
+    // EARLY-CULL: the frame's own frustum, for the cell cull - once, here, and the stamp a draw compares against so a
+    // pass drawn outside a beginFrame culls nothing rather than culling against another frame's planes.
+    if (this._cellsOn) { spherePlanes(mat4Multiply(proj, view, this._cellPv), this._cellPlanes); this._cellPlanesAt = this._frameStamp; }
     // FIELD BUGS 2026-10-12g BATCH-SHUT: a body batch no pass flushed is let go as the frame begins - its pictures are one
     // frame's loss. Left open, every later pass's begin joined it and its flush only stepped the depth down: no
     // Morrowind body drew again until a reload
@@ -7229,6 +7273,7 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     for (const b of mesh.buffers) gl.deleteBuffer(b);
     gl.deleteVertexArray(mesh.vao);
     if (mesh.shadowVao) gl.deleteVertexArray(mesh.shadowVao);   // LA-AUDIT A1: its index buffer is one of mesh.buffers
+    if (mesh.cellVao) gl.deleteVertexArray(mesh.cellVao);   // EARLY-CULL: the lit pass's cell VAO, the same - its buffer is one of mesh.buffers
     // c2/S6: the wireframe cache is the mesh's, and dies with it
     if (mesh._wire) {
       gl.deleteBuffer(mesh._wire.ebo);
@@ -8702,7 +8747,9 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
     this._uploadCloudShadow('mesh');   // VC4
     gl.uniformMatrix4fv(this.uModel, false, modelMatrix);
     if (!wire && !noShadow && this._casting) this._shadows.recordMesh(mesh, modelMatrix, texRemap, 1 - (this._dissolve ?? 1));   // EL2; AUDIT BAY A12: a fading ship's share of her shadow; AUDIT WAGON-HITCH B2: never a grown mesh's
-    this._bindVao(wire ? wireMesh.vao : mesh.vao);
+    // EARLY-CULL: the lit pass reads the cell index buffer when the page asks for it - the same vertices, the triangles
+    // grouped by cell so whole cells can be skipped; the wireframe keeps the whole-batch VAO it expands edges from.
+    this._bindVao(wire ? wireMesh.vao : (this._cellsOn && mesh.cellVao ? mesh.cellVao : mesh.vao));
     for (let smi = 0; smi < mesh.subMeshes.length; smi++) {
       const sm = mesh.subMeshes[smi];
       // EV2: the resolved textures cache on the sub-mesh, stamped with
@@ -8771,6 +8818,32 @@ void main() { vec4 t = texture(uTex, vUV); if (t.a < 0.5) discard; outColor = ve
         const sites = this.stats.sites ??= {};
         sites.mesh++;
         sites.meshTris = (sites.meshTris | 0) + (sm.primitiveCount | 0);   // DRAW-SITES: the triangles this sub-mesh drew
+      } else if (this._cellsOn && mesh.cellVao && sm._runs && !this._meshHold && this._cellPlanesAt === this._frameStamp && isIdentity(modelMatrix)) {
+        // EARLY-CULL: a run a cell. THE SPLIT IS ONLY TAKEN WHEN IT PAYS: the cell cut turns a sub-mesh into as many
+        // draws as the cells its picture stands in, so a picture mostly in view would cost its submissions for nothing -
+        // it is drawn whole (from the batch's own index buffer) unless the culled share is worth it. Only an IDENTITY
+        // model matrix may take this path: a run's sphere is in the merge's own space, and the planes are the frame's.
+        const sites = this.stats.sites ??= {};
+        const runs = sm._runs;
+        let visible = 0;
+        for (let r = 0; r < runs.length; r++) if (this._cellVisible(runs[r])) visible += runs[r].primitiveCount;
+        if (visible * CELL_SPLIT_MIN >= sm.primitiveCount) {
+          this._bindVao(mesh.vao);
+          gl.drawElements(gl.TRIANGLES, sm.primitiveCount * 3, gl.UNSIGNED_INT, sm.startIndex * 4);
+          this.stats.draws++;
+          sites.mesh++;
+          sites.meshTris = (sites.meshTris | 0) + (sm.primitiveCount | 0);
+        } else {
+          this._bindVao(mesh.cellVao);
+          for (let r = 0; r < runs.length; r++) {
+            const run = runs[r];
+            if (!this._cellVisible(run)) { this.stats.cellsCulled += run.primitiveCount; continue; }
+            gl.drawElements(gl.TRIANGLES, run.primitiveCount * 3, gl.UNSIGNED_INT, run.startIndex * 4);
+            this.stats.draws++;
+            sites.mesh++;
+            sites.meshTris = (sites.meshTris | 0) + (run.primitiveCount | 0);
+          }
+        }
       } else {
         gl.drawElements(gl.TRIANGLES, sm.primitiveCount * 3, gl.UNSIGNED_INT, sm.startIndex * 4);
         this.stats.draws++;

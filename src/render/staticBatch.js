@@ -121,13 +121,72 @@ export function shadowCells(positions, indices, size) {
 /** LA-AUDIT A1: the dungeon's cell side - under a third of a block (RDB_SIDE, 51.2), about a dungeon light's reach. */
 export const SHADOW_CELL_SIZE = 16;
 
+/** EARLY-CULL (2026-10-20): the page's door, `?cells=on` - ONE reader, shared by the builder that cuts the level into
+ *  lit cells and the renderer that draws them, so a page can never have one without the other. Off by default: the cut
+ *  below is a cost paid only when it is asked for. */
+export const cellsRequested = (search = globalThis.location?.search ?? '') => /[?&]cells=(on|1)\b/.test(search);
+
+/** EARLY-CULL: a grid cell's key as one exact number - three 13-bit axes about zero, so a Map of them is a fast and
+ *  allocation-free bucket (a string key per triangle per build is not). */
+const packCell = (x, y, z) => ((x + 4096) & 8191) + (((y + 4096) & 8191) * 8192) + (((z + 4096) & 8191) * 67108864);
+
+/**
+ * EARLY-CULL (2026-10-20): THE SAME CELLS, KEPT PER PICTURE. `shadowCells` cuts the level into cells for the shadow
+ * replays, which draw with no texture at all - so a cell there is one run, and a lit pass could not use it: a cell's
+ * triangles wear several pictures and a draw needs the one it belongs to. This cuts them the other way round: one run
+ * list PER SUB-MESH (a sub-mesh is one picture), each run a cell's triangles inside it, with the run's own sphere. A
+ * lit draw can then skip whole cells before they are submitted.
+ *
+ * WHAT IT IS WORTH, measured before it was trusted: on a coherent 9,000-triangle level (16-unit cells, 79 pictures)
+ * this decomposition turns 79 sub-mesh draws into 1,770 cell draws to drop the 61% of triangles outside the frame - and
+ * a triangle outside the frustum is one the GPU already clipped for free. So the cell cut is PLUMBING, not a win: the
+ * renderer only takes it when the visible runs are a small share of a sub-mesh (_drawMeshBundle's own threshold), and
+ * what it exists for is the occlusion cull that can be built on it (a cell set, and a draw grouped by cell rather than
+ * by picture). Its runs are contiguous in `indices`, in each picture's own first-seen cell order; every triangle of the
+ * merge belongs to exactly one run (a test asserts it), and a run's sphere bounds its own triangles, so a cull on them
+ * can fail to cull but cannot cull something visible by mistake.
+ * @param {Float32Array} positions the merge's vertices
+ * @param {Uint32Array} indices the merge's triangles
+ * @param {Array<{ startIndex: number, primitiveCount: number }>} subMeshes the merge's picture groups
+ * @param {number} size the cell's side, in world units (SHADOW_CELL_SIZE)
+ * @returns {{ indices: Uint32Array, runs: Array<Array<{ startIndex: number, primitiveCount: number, cx: number, cy: number, cz: number, r: number }>> }}
+ */
+export function cellRunsBySubMesh(positions, indices, subMeshes, size) {
+  const out = new Uint32Array(indices.length);
+  const runs = subMeshes.map(() => []);
+  let at = 0;
+  for (let s = 0; s < subMeshes.length; s++) {
+    const sm = subMeshes[s];
+    const end = sm.startIndex + sm.primitiveCount * 3;
+    const buckets = new Map();
+    for (let t = sm.startIndex; t < end; t += 3) {
+      const a = indices[t] * 3, b = indices[t + 1] * 3, c = indices[t + 2] * 3;
+      const x = Math.floor((positions[a] + positions[b] + positions[c]) / (3 * size));
+      const y = Math.floor((positions[a + 1] + positions[b + 1] + positions[c + 1]) / (3 * size));
+      const z = Math.floor((positions[a + 2] + positions[b + 2] + positions[c + 2]) / (3 * size));
+      const k = packCell(x, y, z);
+      let cell = buckets.get(k);
+      if (!cell) buckets.set(k, (cell = []));
+      cell.push(t);
+    }
+    for (const tris of buckets.values()) {
+      const start = at;
+      for (const t of tris) { out[at] = indices[t]; out[at + 1] = indices[t + 1]; out[at + 2] = indices[t + 2]; at += 3; }
+      const b = boundsOf(positions, out, start, at - start);
+      runs[s].push({ startIndex: start, primitiveCount: (at - start) / 3, cx: b[0], cy: b[1], cz: b[2], r: b[3] });
+    }
+  }
+  return { indices: out, runs };
+}
+
 export class StaticBatchBuilder {
-  /** @param {{ shadowCell?: number, pieces?: boolean }} [opts] shadowCell: LA-AUDIT A1's cell side; 0 (the default)
-   *  builds no cells. pieces: RW1 - every merged sub-mesh also carries one sphere per model that went into it
+  /** @param {{ shadowCell?: number, pieces?: boolean, litCells?: boolean }} [opts] shadowCell: LA-AUDIT A1's cell side; 0
+   *  (the default) builds no cells. pieces: RW1 - every merged sub-mesh also carries one sphere per model that went into it
    *  (`pieces`, [cx, cy, cz, r] each), so a window's glass measured on the screen is that model's, not the whole batch's
    *  (render/realWindows.js: the view out is cropped to the glass a frame met). Off by default: a city pixel's batch
-   *  never measures them. */
-  constructor({ shadowCell = 0, pieces = false } = {}) {
+   *  never measures them. litCells: EARLY-CULL's per-picture cell cut - defaulting to the page's own door
+   *  (`?cells=on`, cellsRequested above), so a page that never asks pays neither the cut nor its buffers. */
+  constructor({ shadowCell = 0, pieces = false, litCells = cellsRequested() } = {}) {
     this.pieces = !!pieces;
     this.chunks = [];        // [{positions, normals, uvs, base}] one per model, already transformed
     this.groups = new Map(); // resolved key -> [Uint32Array index runs, already offset by base]
@@ -135,6 +194,7 @@ export class StaticBatchBuilder {
     this.triangles = 0;
     this.models = 0;
     this.shadowCell = shadowCell;
+    this.litCells = !!litCells;
   }
 
   /**
@@ -255,6 +315,13 @@ export class StaticBatchBuilder {
       yield;
       const c = shadowCells(positions, indices, this.shadowCell);
       merged.shadowIndices = c.indices; merged.shadowCells = c.cells;
+      // EARLY-CULL: the same cells, kept per picture, for the LIT pass - only when the page asks (`?cells=on`). It is a
+      // second cut of every triangle, a third index copy and a run object a cell: ~8-10 ms of a dungeon's merge and a
+      // few hundred KB, so nothing pays it by default.
+      if (this.litCells) {
+        const lit = cellRunsBySubMesh(positions, indices, subMeshes, this.shadowCell);
+        merged.cellIndices = lit.indices; merged.cellRuns = lit.runs;
+      }
     }
     return merged;
   }
