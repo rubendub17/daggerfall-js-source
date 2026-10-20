@@ -32,8 +32,8 @@ import { nextWaypoint, trackLength, validateTrack, distanceTo } from '../systems
 import { planRoute, snapToWalkable, seededRandom } from '../systems/bench/route.js';   // BENCH1: a street route off the town's own navigation grid, the same route every run
 import { townCentreOf } from './seatBanners.js';   // BENCH1: the town's own middle - the point the Seats hang their banners on, not the mean of its blocks
 import { BENCH_TRACKS } from '../systems/bench/tracks.js';
-import { nearestFoe, standoffSpot, aimYaw, foeFeet, foeCentre, foeHealthTotal } from '../systems/bench/fight.js';   // BENCH1: the fight's own geometry - where a foe IS (its AI's feet, not a `pos` it never had) and where a body must stand to reach it
-import { pickWalk, advancePath } from '../systems/bench/dungeonPath.js';   // BENCH1: the dungeon walked on the dungeon's own navmesh, the one its foes already path over
+import { nearestFoe, aimYaw, foeFeet, foeCentre, foeHealthTotal } from '../systems/bench/fight.js';   // BENCH1: the fight's own geometry - where a foe IS (its AI's feet, not a `pos` it never had) and where a body must stand to reach it
+import { pickWalk, advancePath, walkGoals } from '../systems/bench/dungeonPath.js';   // BENCH1: the dungeon walked on the dungeon's own navmesh, the one its foes already path over
 import { createBenchOverlay, reportLines } from '../ui/benchOverlay.js';
 import { installInputLock } from '../systems/bench/lock.js';   // BENCH1: the player's hands off the game while the run is live
 import { forcePref, clearForcedPref } from '../systems/uiPrefs.js';   // BENCH1: the tutorials off for THIS page and no shelf write - a run must not edit the switch a player keeps
@@ -47,11 +47,15 @@ export const SWING_EVERY_MS = 700;
 /** How long a BOW is held before it looses, milliseconds - a draw is not a swing, and a release at a
  *  fifth of the draw tests the cancel rather than the arrow. */
 export const BOW_DRAW_MS = 900;
-/** How far a bow leg stands from its foe, metres. A bow is a RANGED weapon and it spawns its shaft
- *  at the bow: stood at a blade's 1.6 m the arrow has no room to become an arrow, which is why the
- *  bow leg took nothing off the foes' health while the mage's (a missile from the eye) did. Eight
- *  metres is inside the bow's own reach and outside its own model. */
-export const BOW_STANDOFF_M = 8;
+/** THE ARENA. Every fight leg is measured in the SAME place - the floor the dungeon's own boot stood the
+ *  body on - with the body ROOTED there: it turns and looks, it does not walk (the owner: "all the
+ *  fighting dungeons should be same space, character can't move its location, it can look at
+ *  enemies"). A fixed venue is also what makes two legs comparable: same room, same light, same floor. */
+export const ARENA_SPOT_M = 2;      // the NEAR rat, metres - inside the blade's own 2.5 m reach
+export const ARENA_FAR_M = 6;       // the FAR rat, metres - room for an arrow to become one
+export const ARENA_SIDE_M = 1.4;    // and how far to either side, so the two do not overlap
+export const ARENA_RATS = 2;        // the ring: always this many alive, restocked as they die
+export const ARENA_KEEP_M = 18;     // a rat this near is the arena's; anything further is the layout's
 /** How long a CAST is held, and how often the next begins, milliseconds. A spell is slower than a
  *  swing on purpose: the owner watched the mage leg and said "in the mage put a timeout between
  *  spells, it's spamming too much" - a cast costs mana and the ready must be re-made between casts,
@@ -60,9 +64,6 @@ export const SPELL_HOLD_MS = 400;
 export const SPELL_EVERY_MS = 1500;
 /** How fast the crowd leg turns the view, radians a second - a look around, not a spin. */
 export const SWEEP_RAD_S = 0.35;
-/** How near a foe is the one being fought, metres - the classic spawn band's horizontal reach, so
- *  the foe has taken the player for a target by the time the leg swings. */
-export const FOE_REACH_M = 25;
 /** How close the body walks to a foe before it stops to fight, metres - inside the weapon's own
  *  reach (the game measures a blow from the EYE to the foe's mid-capsule, 2.5 m), with room for a
  *  body that keeps drifting. */
@@ -90,8 +91,18 @@ export const MESH_WAIT_MS = 30000;
 export const WALK_VISITED_M = 8;
 /** How long a walk may make no progress before it is pinned rather than walking, milliseconds. */
 export const WALK_STUCK_MS = 2500;
-/** What counts as progress, metres a frame - under it the body is against something. */
-export const WALK_MOVED_M = 0.02;
+/** What counts as progress, metres of NEW ground. A frame's own travel is not the measure: 0.02 m a
+ *  frame is a stride at 60 fps and a standstill at 600, so the watch is set in metres and time
+ *  (`WALK_STUCK_MS`) rather than per frame - the machine this benchmark measures is the one whose
+ *  frame rate is worst, and a walk judged per frame would fail exactly there. */
+export const WALK_PROGRESS_M = 1;
+/** How far off the bearing a dungeon walker will still walk, radians - tight on purpose. The street's
+ *  `WALK_WITHIN_RAD` (1.9) lets the bot cross a street at any angle; a corridor is two metres wide, so
+ *  the body turns on the spot first and walks down the corridor instead of diagonally into the jamb. */
+export const WALK_FACE_RAD = 0.8;
+/** The ground a walked dungeon owes its leg, metres. Under it the body was turning on the spot, or
+ *  pinned by a jamb, for the whole window - a walk that went nowhere, whatever the frames say. */
+export const WALK_MIN_M = 8;
 /** How near a waypoint counts as reached while WALKING a dungeon route, metres. The dungeon's own foe
  *  AI reaches its waypoints at 0.45 m; a looser 1.2 m cuts the corner of a corridor and walks the body
  *  into the wall it cut. */
@@ -329,6 +340,7 @@ function hostSyntheticKey(type, code) {
  *   equip?: ((item:any) => void) | null, stow?: ((item:any) => void) | null,
  *   drawn?: (() => boolean) | null, warp?: ((pt:number[]) => boolean) | null,
  *   attack?: ((held:boolean) => void) | null, plan?: ((from:number[], to:number[]) => number[][] | null) | null,
+ *   sites?: (() => number[][]) | null,
  *   aimAt?: ((pt:number[]) => void) | null, navReady?: (() => boolean) | null, document?: any,
  * }} host
  */
@@ -393,6 +405,9 @@ export function createDungeonBench(host) {
   let drew = false;
   let drawTries = 0;
   let walkNext = false;
+  let ratKills = 0;             // how many the leg has killed - the arena's own damage proof
+  let ratRefs = [];             // the arena's own rats - kept at ARENA_RATS alive, restocked as they die
+  let ratsPending = 0;          // spawns in flight, so a slow one is not asked for twice
   /** A NEW LEG'S WEAPON IS A NEW DRAW. `armGear` equips the leg's own weapon, and an equip puts the
    *  weapon AWAY (`playerWeapon.sheathed` goes true on the swap) - so the bow leg began with the
    *  Ready Weapon press already spent on the blade's, the rig refusing every press behind
@@ -447,13 +462,53 @@ export function createDungeonBench(host) {
   /** Stand the body in the fight: on the line between it and the nearest live foe, at striking
    *  distance. Answers whether it moved - a page that offers no warp keeps the body where it is and
    *  the fight leg says so by name. */
-  const standInTheFight = (id) => {
-    const at = host.feet?.() ?? null;
-    const foe = nearestFoe(host.foes?.() ?? [], at, Number.POSITIVE_INFINITY);
-    if (!at || !foe) return false;
-    const spot = standoffSpot(foe, at, id === 'bow' ? BOW_STANDOFF_M : undefined);
+  /**
+   * STAND IN THE ARENA - the same floor for every fight leg, and the body stays there. The spot is the
+   * dungeon's own boot spawn (`host.entry`), a floor the navmesh and the collider both know; the body is
+   * put there once per leg and never moved again, because a fight that also walks measures two systems
+   * and shows a viewer a body sliding about instead of a fight.
+   */
+  const standInTheArena = () => {
+    const spot = host.entry?.() ?? null;
     if (!spot) return false;
     return host.warp?.(spot) !== false;
+  };
+  /** Where a rat is stood: in front of the body, to one side or the other, so the two are a pair and
+   *  not a stack. */
+  const ratSpot = (side, heading, at, away = ARENA_SPOT_M) => [
+    at[0] + Math.sin(heading) * away + Math.cos(heading) * side,
+    at[1],
+    at[2] + Math.cos(heading) * away - Math.sin(heading) * side,
+  ];
+  /** KEEP THE RING AT ARENA_RATS. A leg that kills its rats and then swings at a wall for the rest of its
+   *  window measures nothing; the arena restocks as they fall, which is also what a person watching
+   *  expects to see. Only a rat standing in the ring counts - the layout's own foes are not the arena's. */
+  const restock = (heading, at) => {
+    if (typeof host.spawnRat !== 'function') return;
+    for (const r of ratRefs) if (r?.dead) ratKills++;   // a fallen rat is the proof; a restock is the ring
+    ratRefs = ratRefs.filter((r) => r && !r.dead);
+    let ring = ratRefs.filter((r) => { const f = foeFeet(r); return f && distanceTo(f, at) < ARENA_KEEP_M; });
+    let asks = 0;
+    while (ring.length + ratsPending < ARENA_RATS && asks < ARENA_RATS) {
+      // ONE AT ARM'S LENGTH, ONE ACROSS THE ROOM: a blade reaches 2.5 m and a bow's shaft spawns at the
+      // bow, so a single distance cannot serve both. The blade and the spell fight the near rat; the bow
+      // fights the far one (see `want` below).
+      const first = (ring.length + ratsPending) % 2 === 0;
+      const side = first ? -ARENA_SIDE_M : ARENA_SIDE_M;
+      const pos = ratSpot(side, heading, at, first ? ARENA_SPOT_M : ARENA_FAR_M);
+      asks++;
+      ratsPending++;
+      try {
+        const made = host.spawnRat(pos);
+        if (made && typeof made.then === 'function') {
+          made.then((rec) => { ratsPending--; if (rec && !rec.dead) ratRefs.push(rec); }).catch(() => { ratsPending--; });
+        } else {
+          ratsPending--;
+          if (made && !made.dead) ratRefs.push(made);
+        }
+      } catch { ratsPending--; }
+      ring = ring.concat([{}]);
+    }
   };
   return createBenchHost({
     scene: 'dungeon',
@@ -495,20 +550,34 @@ export function createDungeonBench(host) {
       // spell and sheathes the weapon in the same press: the Ready Weapon key on a spell leg would
       // take the leg's spell away from it.
       if (id !== 'spell') drawWeapon();
-      standInTheFight(id);
+      standInTheArena();
     },
     foes: () => host.foes?.() ?? [],
     foeHealth: () => foeHealthTotal(host.foes?.() ?? []),
     rearm,   // BENCH1: the spell leg's ready, made again before each blow (a cast spends it)
     attack: host.attack ?? null,
     aimAt: host.aimAt ?? null,
-    level: host.level ?? null,   // BENCH1: a walker's eye, level - a corridor is not a ceiling
+    level: host.level ?? null,
+    spawnRat: host.spawnRat ?? null,
+    restockArena: restock,
+    // THE RING'S OWN RAT, chosen by the weapon: `want` is 'near' (a blade's or a spell's) or 'far' (a
+    // bow's). Nearest-first otherwise, and only the arena's rats count - never the layout's 42.
+    arenaFoe: (at, want) => {
+      const live = ratRefs.filter((r) => r && !r.dead)
+        .map((r) => ({ r, p: foeFeet(r) }))
+        .filter((x) => x.p && distanceTo(x.p, at) < ARENA_KEEP_M)
+        .sort((a, b) => distanceTo(a.p, at) - distanceTo(b.p, at));
+      if (!live.length) return null;
+      return (want === 'far' ? live[live.length - 1] : live[0]).r;
+    },
+    arenaKills: () => ratKills,   // BENCH1: the dungeon bench keeps the two rats alive; the host asks each frame   // BENCH1: the arena's own two rats, through the context spawner   // BENCH1: a walker's eye, level - a corridor is not a ceiling
     drawn: host.drawn ?? null,
     ready: host.ready ?? null,
     readied: host.readied ?? null,
     stow: host.stow ?? null,
     entry: host.entry ?? null,
     plan: host.plan ?? null,
+    sites: host.sites ?? null,   // BENCH1: the dungeon's own floor as places, so the walk crosses it instead of walking to the rats and back
     build: null,
     document: host.document,
   });
@@ -556,6 +625,7 @@ const turnTo = (want, have) => {
  *   attack?: ((held:boolean) => void) | null,
  *   rearm?: (() => void) | null,
  *   plan?: ((from:number[], to:number[]) => number[][] | null) | null,
+ *   sites?: (() => number[][]) | null,
  *   travel?: (() => boolean) | null,
  *   applyPreset?: ((preset:object|null) => void) | null,
  *   build?: (() => string | null) | null,
@@ -593,12 +663,12 @@ export function createBenchHost(deps) {
   let walk = null;              // the dungeon leg's route: the engine's own plan, followed waypoint by waypoint
   let walkCursor = 0;           // and how far along it the body has walked
   const walkSeen = [];          // the destinations this leg has been to - it does not go back to them
-  let fightWalk = null;         // a fight leg's route to a foe out of reach - the same mesh the walk uses
-  let fightCursor = 0;          // and how far along it the body has got
-  let walkStill = 0;            // when the body last made progress, for the stuck watch
-  let walkLast = null;          // the last feet read, for the metres and the watch
+  let walkStillAt = 0;          // when the body last made progress, for the stuck watch - MILLISECONDS
+  let walkStillPos = null;      // and where it stood then, so progress is a metre of new ground
+  let walkLast = null;          // the last feet read, for the metres the leg covered
   let walkedM = 0;              // the metres the leg's body actually covered
   let walkedStuck = 0;          // how many times it abandoned a route and planned again
+  let killsAt = null;           // an ARENA page's kills when the leg began - the proof a restocked ring needs
   let damageAt = null;          // a fight leg's foe health when it began, for the damage proof at its end
   let report = null;
   let bot = null;
@@ -713,6 +783,8 @@ export function createBenchHost(deps) {
     // report the first leg's walk.
     walkSeen.length = 0;
     walkLast = null;
+    walkStillAt = 0;
+    walkStillPos = null;
     walkedM = 0;
     walkedStuck = 0;
     stopHands();
@@ -727,6 +799,7 @@ export function createBenchHost(deps) {
     // A FIGHT LEG'S PROOF OF A FIGHT: the foes' health as the leg found it. A leg that swings for
     // twenty seconds and takes nothing off that number measured a body flailing, not combat, and
     // says so at its end (see `endLeg`).
+    killsAt = FIGHT_IDS.includes(leg.id) && typeof deps.arenaKills === 'function' ? deps.arenaKills() : null;
     damageAt = FIGHT_IDS.includes(leg.id) && typeof deps.foeHealth === 'function' ? readFoeHealth() : null;
     card?.progress?.(id, 0);
   }
@@ -734,6 +807,14 @@ export function createBenchHost(deps) {
   /** The foes' total health, or null when this host has none to read. */
   function readFoeHealth() {
     try { const n = deps.foeHealth?.(); return Number.isFinite(n) ? n : null; } catch { return null; }
+  }
+
+  /** The dungeon's own floor as places to walk to - one centre per navmesh polygon, from the page that
+   *  baked it (`deps.sites`). A page that wires none answers [], and the walk falls back to its foes
+   *  exactly as it used to; a page whose bake threw answers the same, because a walk that has no
+   *  places to ask about is a leg that says so, not a run that dies on a query. */
+  function readSites() {
+    try { const s = deps.sites?.(); return Array.isArray(s) ? s : []; } catch { return []; }
   }
 
   function censusOf(leg) {
@@ -774,7 +855,14 @@ export function createBenchHost(deps) {
     // THE DAMAGE PROOF. Two runs of a fight leg must be comparable, and a leg whose blows never
     // landed measured idle frames. So the foes' health is read again and the drop is REPORTED; a
     // leg that took nothing off it is a named failure, because a benchmark cannot call that combat.
-    if (damageAt !== null) {
+    // AN ARENA LEG IS PROVED BY ITS KILLS. The ring is restocked as it falls, so the foes' summed health
+    // cancels itself out (a rat dies for -57, another stands for +57); the count of the fallen does not.
+    if (killsAt !== null) {
+      const kills = deps.arenaKills();
+      entry.kills = kills - killsAt;
+      if (entry.kills > 0) entry.notes.push(entry.kills + " rat(s) killed by the leg own blows");
+      if (!(entry.kills > 0)) failures.push(leg.title + ": no rat was killed - the leg swung and nothing it hit went down, so this measured a body flailing, not combat");
+    } else if (damageAt !== null) {
       const now = readFoeHealth();
       const dealt = now === null ? null : Math.max(0, damageAt - now);
       entry.damage = dealt;
@@ -782,12 +870,15 @@ export function createBenchHost(deps) {
       if (dealt === 0) failures.push(`${leg.title}: the leg swung and no blow landed - nothing was taken off the foes' health, so this measured a body flailing, not combat`);
     }
     if (leg.id === 'dungeon') {
-      // THE WALK'S OWN PROOF: the metres the body covered, and how often it had to abandon a route.
-      // Zero metres over the whole leg is a body standing in a wall, whatever the frame rate says.
+      // THE WALK'S OWN PROOF: the ground the body covered, and how often it had to abandon a route.
+      // A leg that covers less than WALK_MIN_M in its whole window was turning on the spot, or pinned
+      // against a jamb, for every frame of it - a walk that went nowhere, and a failure rather than a
+      // note (the old rule asked only for more than zero metres, which a body shuffling in a doorway
+      // passes).
       entry.walked = Math.round(walkedM * 10) / 10;
       if (walkedStuck) entry.notes.push(`${walkedStuck} route(s) abandoned as pinned`);
-      if (walkedM > 0) entry.notes.push(`the body covered ${entry.walked} m`);
-      if (!(walkedM > 0)) failures.push(`${leg.title}: the walk covered no ground - the body never left where it stood`);
+      if (walkedM >= WALK_MIN_M) entry.notes.push(`the body covered ${entry.walked} m`);
+      else failures.push(`${leg.title}: the body covered ${entry.walked} m of the dungeon in ${leg.seconds} s - under the ${WALK_MIN_M} m a walked dungeon owes, so this measured a body turning (or pinned) instead of a walk`);
     }
     if (!s.frames) failures.push(`${leg.title}: no frame was measured - the leg held ${stamps.length} stamp(s)`);
     if (!judged.ok) failures.push(`${leg.title}: ${judged.why}`);
@@ -875,23 +966,24 @@ export function createBenchHost(deps) {
       // the mesh's own funnel does.
       //
       // AND THE WALK KEEPS GOING SOMEWHERE NEW. The second watch: "in the dungeon the guy isn't going
-      // through the dungeon... navigate, walk, go into rooms, turn around". Two causes, both fixed
-      // here: the destinations were every foe sorted by distance with no memory, so a plan that ended
-      // where the body had just come from was taken again; and a body the collider pinned (a door
-      // jamb, a stair nose) re-planned to the same place for ever. Now a destination is remembered
-      // (`WALK_VISITED_M`), the furthest one not yet visited wins, and a body that stops moving
-      // re-plans at once.
+      // through the dungeon... navigate, walk, go into rooms, turn around". Three causes, all fixed
+      // here: the destinations were EVERY FOE and nothing else, so the leg walked to the two rats the
+      // fight legs had just left standing two metres away and back again - the floor it was supposed to
+      // cross was never a destination at all; a plan that ended where the body had just come from was
+      // taken again; and a body the collider pinned (a door jamb, a stair nose) re-planned to the same
+      // place for ever. Now the floor's own places are the destinations (`deps.sites`: one centre per
+      // navmesh polygon, farthest first and spread across the dungeon), a destination is remembered
+      // (`WALK_VISITED_M`), and a body that stops moving re-plans at once.
       if (!walk) {
         const plan = deps.plan ?? null;
         if (!plan) return 'this page offers no dungeon route (its host wired no navmesh plan), so the walk has nowhere to be planned';
-        const fresh = (deps.foes?.() ?? [])
-          .map((f) => foeFeet(f))
-          .filter(Boolean)
-          .filter((g) => walkSeen.every((v) => distanceTo(v, g) > WALK_VISITED_M))
-          .sort((a, c) => distanceTo(at, c) - distanceTo(at, a));
-        // every foe already visited: forget the memory rather than stand still, and walk again
-        const goals = fresh.length ? fresh : (deps.foes?.() ?? []).map((f) => foeFeet(f)).filter(Boolean);
-        if (!fresh.length) walkSeen.length = 0;
+        const sites = readSites();
+        const foes = (deps.foes?.() ?? []).map((f) => foeFeet(f)).filter(Boolean);
+        const ask = (seen) => walkGoals({ sites, foes, seen, from: at, visitedM: WALK_VISITED_M });
+        let goals = ask(walkSeen);
+        // EVERY DESTINATION THIS LEG HAS BEEN TO: forget the memory and cross the dungeon again rather
+        // than stand still - a dungeon of a few rooms has fewer places than a leg has seconds.
+        if (!goals.length) { walkSeen.length = 0; goals = ask(walkSeen); }
         try { walk = pickWalk({ plan, from: [...at], goals }); } catch (err) {
           return `the dungeon's own path query refused to answer (${err?.message ?? err}) - nothing to walk on`;
         }
@@ -906,7 +998,8 @@ export function createBenchHost(deps) {
         }
         if (walk.goal) walkSeen.push(walk.goal);
         walkCursor = 0;
-        walkStill = at;
+        walkStillAt = clock();
+        walkStillPos = [...at];
         walkLast = [...at];
       }
       // A TIGHT WAYPOINT, as the dungeon's own foe AI follows its route (`WP_REACH` 0.45 m there): a
@@ -914,21 +1007,25 @@ export function createBenchHost(deps) {
       const step = advancePath(walk.points, walkCursor, at, WALK_WAYPOINT_M);
       walkCursor = step.index;
       // THE METRES THE BODY ACTUALLY COVERED - the reading that says the walk went somewhere instead
-      // of turning on the spot, and the number the leg's notes carry.
+      // of turning on the spot, the number the leg's notes carry, and the leg's own proof at its end.
       const movedNow = walkLast ? distanceTo(walkLast, at) : 0;
       if (movedNow < 3) walkedM += movedNow;   // (a jump is a warp, not a step: it is not counted)
       walkLast = [...at];
-      // STUCK WATCH: a body that has not moved in WALK_STUCK_MS is pinned - a door jamb, a stair
-      // nose, a crate - not walking. Plan again from here rather than spend the leg against it.
-      if (movedNow > WALK_MOVED_M) walkStill = at;
-      if (at - walkStill > WALK_STUCK_MS) {
+      // STUCK WATCH: a body that has not found WALK_PROGRESS_M of new ground in WALK_STUCK_MS is pinned
+      // - a door jamb, a stair nose, a crate, a rat in the doorway - and not walking. Plan again from
+      // here rather than spend the leg against it. (The watch is set in METRES and MILLISECONDS, not in
+      // metres a frame: the old one compared a point with a point and never fired at all, and a
+      // per-frame threshold fails a machine whose walk is real but slow.)
+      if (distanceTo(walkStillPos, at) > WALK_PROGRESS_M) { walkStillPos = [...at]; walkStillAt = clock(); }
+      if (clock() - walkStillAt > WALK_STUCK_MS) {
         walkedStuck++;
         walk = null;
-        walkStill = at;
+        walkStillAt = clock();
+        walkStillPos = [...at];
         return null;
       }
       if (step.done) { walk = null; return null; }   // the route is behind us: plan the next one
-      if (step.target) b.steer({ at, heading: h, target: step.target, dt });
+      if (step.target) b.steer({ at, heading: h, target: step.target, dt, withinRad: WALK_FACE_RAD });
       // A WALKER LOOKS WHERE IT IS GOING. Whatever pitch the last fight aimed with is not a corridor's
       // - the owner watching the dungeon leg: "also stop looking up".
       try { deps.level?.(); } catch { /* a host with no level look */ }
@@ -943,65 +1040,43 @@ export function createBenchHost(deps) {
     // walked or swung would measure two things at once (it used to fall through to the fight branch
     // and swing at a page with no foes at all).
     if (!FIGHT_IDS.includes(leg.id)) return null;
-    // blade, bow, spell: THE RING OF FOES. Close on the nearest live one, face it, swing on the
-    // cadence - and the press is the host's OWN attack door (`deps.attack`), because the swing is a
-    // MOUSE edge: on this host `SwingWeapon` answers `Mouse1`, the per-frame latch skips mouse
-    // codes, and a synthetic KeyboardEvent naming one reaches nothing (that is why the first real
-    // run's fights were a body standing still, swinging at the air).
+    // blade, bow, spell: THE ARENA. The body stands on ONE floor for all three legs and STAYS there - it
+    // turns its head and swings, it does not walk (the owner: "all the fighting dungeons should be same
+    // space, character can't move its location, it can look at enemies, always have spawned two rats at
+    // the time"). Two rats are kept alive in front of it, restocked as they fall, and every leg fights
+    // exactly that: the same room, the same two foes, one weapon different each time - which is what
+    // makes the three legs comparable at all.
     const foes = deps.foes?.() ?? [];
-    const foe = nearestFoe(foes, at, FOE_REACH_M);
+    if (!deps.spawnRat) {
+      // a page with no arena spawner cannot keep the ring, so the leg says so rather than measuring a
+      // fight against whatever the layout happened to place
+      return 'this page offers no arena spawner (its host wired no spawnRat), so the two rats cannot be stood';
+    }
+    try { deps.restockArena?.(h, at); } catch { /* a page whose arena refused */ }
+    const want = leg.id === 'bow' ? 'far' : 'near';
+    const foe = (typeof deps.arenaFoe === 'function' ? deps.arenaFoe(at, want) : null) ?? nearestFoe(foes, at, ARENA_KEEP_M);
     if (!foe) {
-      return foes.length
-        ? `the ${foes.length} foe(s) of this dungeon are all further than ${FOE_REACH_M} m from where the leg stands - a fight has to be stood in`
-        : 'this dungeon holds no living foe to fight (the scene was built without them, or the leg has already killed them all)';
+      return `no rat is standing in the arena (${foes.length} foe(s) in the dungeon, none within ${ARENA_KEEP_M} m) - the spawner did not answer`;
     }
     const feet = foeFeet(foe);
     // A WEAPON THAT NEVER CAME OUT IS NOT A MISS. The rig refuses every blow behind `sheathed`, so a
     // leg whose draw was refused swings nothing at all - and "no blow landed" would send a reader
-    // looking at reach and aim when the real answer is that the hand was empty. The page can say
-    // (`deps.drawn` is the rig's own Sheathed), so the leg says it.
+    // looking at reach and aim when the real answer is that the hand was empty.
     if (leg.id !== 'spell' && typeof deps.drawn === 'function' && !deps.drawn()) {
       return `its weapon never came out of its sheath - the rig refused all ${DRAW_TRIES} draw attempts, so every press was a blow at nothing`;
     }
-    const dx = feet[0] - at[0];
-    const dz = feet[2] - at[2];
-    const dist = Math.hypot(dx, dz);
-    // AIM, DON'T JUST TURN: a missile leaves along the camera's forward vector, so the PITCH matters
-    // as much as the yaw - a level look at a foe whose mid-capsule is below the eye looses the arrow
-    // over its head, which is why the bow and spell legs took nothing off the health they were
-    // measured against. The host's own look door (`deps.aimAt`) sets both; a host without one gets
-    // the incremental yaw turn it always had.
+    // AIM, DON'T JUST TURN: a missile leaves along the camera's forward vector, so the PITCH matters as
+    // much as the yaw - a level look at a rat whose mid-capsule is below the eye looses the arrow over
+    // its head. The host's own look door sets both; a host without one gets the incremental yaw turn.
     if (typeof deps.aimAt === 'function') {
       try { deps.aimAt(foeCentre(foe) ?? feet); } catch { /* a host whose look refused */ }
     } else {
       const delta = turnTo(aimYaw(at, feet), h);
       if (Math.abs(delta) > 0.1) deps.turnBy?.(Math.max(-0.12, Math.min(0.12, delta)));
     }
-    // INSIDE THE WEAPON'S REACH IT STANDS AND SWINGS; OUTSIDE IT WALKS THERE, on the dungeon's own
-    // navmesh - a body that stops because the leg warped it into place reads as frozen (the owner,
-    // watching: "in fighting scene char cant move place"). The route is the engine's own path to the
-    // foe, followed waypoint by waypoint exactly as the walk leg follows its own.
-    const closeTo = leg.id === 'bow' ? BOW_STANDOFF_M : FIGHT_CLOSE_M;   // an archer holds its range
-    if (dist > closeTo) {
-      if (!fightWalk && typeof deps.plan === 'function') {
-        try { fightWalk = pickWalk({ plan: deps.plan, from: [...at], goals: [feet], maxGoals: 1 }); } catch { fightWalk = null; }
-        fightCursor = 0;
-      }
-      if (fightWalk) {
-        const step = advancePath(fightWalk.points, fightCursor, at);
-        fightCursor = step.index;
-        if (step.done) fightWalk = null;
-        else if (step.target) b.steer({ at, heading: h, target: step.target, dt });
-      } else {
-        b.steer({ at, heading: h, target: feet, dt });   // no mesh to ask: the straight line it had
-      }
-      // ON THE WAY TO THE FOE IT LOOKS AHEAD, LEVEL - the aim below is for a foe already in reach, and
-      // a body walking a corridor with its eye on a ceiling is what the owner saw.
-      try { deps.level?.(); } catch { /* a host with no level look */ }
-    } else {
-      fightWalk = null;
-      b.steer({ at, heading: h, target: [at[0], at[1], at[2]], dt });
-    }
+    // ROOTED: the body looks and swings, and never translates. `b.stop()` is the bot letting go of every
+    // movement key, which is the only way a fight leg can promise it measured combat and not walking.
+    b.stop();
     b.tick(clock());
     // THE CADENCE IS A CADENCE, AND THE SPELL'S IS SLOWER. A bow's draw is longer than a swing; a
     // caster's is slower again, because a cast costs mana and the ready has to be re-made before the

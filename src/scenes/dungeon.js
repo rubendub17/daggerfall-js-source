@@ -13,7 +13,7 @@ import { noteLocalPlayer, tacticsNow, tickTactics } from '../ai/tactics.js';   /
 import { foeFrameDt } from '../characters/enemy/enemyMotor.js';   // AUDIT TACT: the foes' own step, for the brain's clock
 import { drawableBlows } from '../ai/foeBlows.js';   // TACT4
 import { techniqueMarksNow } from '../combat/techniques.js';   // TECH1: the player's own marks on the ground, after the foes'
-import { findPath } from '../ai/nav/navmesh.js';   // BENCH1: the dungeon walked on the mesh its own foes path over - never a straight line into a wall
+import { findPath, navSites } from '../ai/nav/navmesh.js';   // BENCH1: the dungeon walked on the mesh its own foes path over - never a straight line into a wall
 import { iilActive, iilDungeonLights, iilTorch, iilSyncLane } from '../systems/improvedInteriorLighting.js';   // IIL1
 import { Arch3dFile } from '../formats/arch3dFile.js';
 import { WORLD_FRAME } from '../render/renderer.js';   // AUDIT-EL F5
@@ -249,6 +249,10 @@ export async function bootDungeon(canvas, renderer, params, status) {
 /** The navmesh the dungeon's OWN foes path over: the enhanced AI bakes it from this collider on the
  *  first frames, and every foe's AI holds the reader for it. Null until it lands - which is what the
  *  walk leg's settle phase waits on. */
+/** DFU's EnemyBasics row 0 (characters/enemy/enemyBasics.js ENEMY_NAMES[0]) - the rat a fight
+ *  leg is measured against: the smallest hostile the game has, so a leg proves the combat path and not
+ *  the level curve. */
+const RAT_MOBILE_TYPE = 0;
 const navMeshOf = () => (ctx.foes ?? []).find((f) => f.ai?.nav?.())?.ai.nav() ?? null;
 const bench = params.has('bench') ? createDungeonBench({
   params, bindings, codeForAction, equip: (item) => equipItem(playerEntity, item),
@@ -311,10 +315,20 @@ const bench = params.has('bench') ? createDungeonBench({
   // last fight left it wearing looks at the ceiling all the way down a corridor (the owner: "also
   // stop looking up"); a walker looks where it is going.
   level: () => { cam.pitch = 0; lookFilter.settle(); },
+  // BENCH1: THE ARENA'S OWN FOES. A benchmark's fight is a KNOWN FIGHT: two rats, in a room, on the
+  // floor the body is standing on - not whatever the layout marker happened to place forty metres away
+  // and mostly out of sight. `spawnLooseFoe` is this context's own spawner (the door a quest, an
+  // encounter and the arena's bouts all use), and DFU's EnemyBasics row 0 is the Rat.
+  spawnRat: (pos) => ctx.spawnLooseFoe(RAT_MOBILE_TYPE, pos),
   warp: (pt) => { player.spawn(pt[0], pt[1], pt[2]); cam.pos = player.eyeAt(); return true; },
   // the context hands the pool as an ARRAY, not a thunk (its own `foes:` dep above is the thunk)
   navReady: () => !!navMeshOf(),
   plan: (from, to) => { const chf = navMeshOf(); return chf ? findPath(chf, from, to) : null; },
+  // AND WHERE THE WALK MAY GO, which is the FLOOR and not the two rats the fight legs left standing:
+  // one centre per navmesh polygon, from the same mesh `plan` routes over. A walk offered only the
+  // arena's rats walks to them and back (the owner: "in the dungeon the guy isn't going through the
+  // dungeon"); offered the floor, it crosses rooms and turns corners.
+  sites: () => navSites(navMeshOf()),
   document: globalThis.document,
 }) : null;
   console.log(`[spawn] marker ${JSON.stringify(ctx.startMarker)} -> feet [${spawn.map((v) => v.toFixed(3)).join(', ')}] (startSpawn build)`);

@@ -483,6 +483,30 @@ The archer also keeps its range now (`BOW_STANDOFF_M` 8 m): a bow spawns its sha
 blade's 1.6 m gave the arrow no room to become one - that is why the bow leg took nothing off the
 foes' health while the mage's did.
 
+## The fourth WATCH: an arena, not a wander (2026-10-20)
+
+"All the fighting dungeons should be the same space, the character can't move its location, it can
+look at enemies, always keep two rats spawned at the time."
+
+That is the right shape for a fight leg, and it replaces everything the previous round had built for
+them (a warp to a foe's shoulder, a walk to a foe out of reach, a per-weapon standoff):
+
+- ONE FLOOR, ROOTED. Every fight leg stands the body on the dungeon's own boot floor (`host.entry`)
+  and the body never translates: the bot lets go of every movement key (`b.stop()`) and only turns
+  its head. Same room, same light, same floor for all three legs - which is what makes them
+  comparable at all.
+- TWO RATS, KEPT AT TWO. The arena spawns its own foes through the context's own spawner
+  (`spawnLooseFoe`, the door a quest, an encounter and the arena's bouts all use) and restocks the
+  ring as they fall - a leg that killed its only rat then swung at a wall measures nothing. One rat
+  stands at arm's length (2 m, inside a blade's 2.5 m reach) and one across the room (6 m, room for
+  an arrow); the blade and the spell fight the near one, the bow the far one.
+- PROVED BY KILLS. A restocked ring cancels its own summed health (a rat dies for -57 and another
+  stands for +57), so the proof is the count of the fallen: `entry.kills`, printed on the card, and a
+  leg that put nothing down fails by name.
+
+The walk leg is untouched by any of this: it is the leg whose subject IS walking.
+
+
 
 
 

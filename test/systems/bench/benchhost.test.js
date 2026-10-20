@@ -186,18 +186,30 @@ test('BENCH1 host: no bindings, no hands - the leg fails rather than pressing a 
   assert.deepEqual(w.asked.press, [], 'nothing was pressed at all');
 });
 
+/** THE ARENA, faked: one rat four metres out, a spawner that stands it, and a kill counter the test
+ *  drives itself. The fight legs are rooted and proved by kills now, so a fake host has to answer
+ *  those three questions the way the dungeon page does. */
+const arena = (over = {}) => {
+  const rat = { ai: { feet: [0, 0, 4], height: 1.8 }, entity: { health: 40, maxHealth: 40 }, dead: false };
+  const said = { kills: 0, spawned: 0, restocked: 0 };
+  return {
+    foes: () => [rat],
+    spawnRat: () => { said.spawned++; return rat; },
+    restockArena: () => { said.restocked++; },
+    arenaFoe: () => rat,
+    arenaKills: () => said.kills,
+    said,
+    ...over,
+  };
+};
+
 test('BENCH1 host: the fight legs press ONE swing code on the cadence, and the host decides which system answers', () => {
   // THE MOUSE'S OWN DOOR, held and let go. `SwingWeapon` binds to Mouse1 on the dungeon host and its
   // per-frame latch skips mouse codes, so the synthetic key alone reaches nothing: the leg also holds
   // the host's attack door while the bot holds the swing, which is what fires the bow on release.
   const pressed = [];
-  const w = fakeWorld({
-    scene: 'dungeon',
-    params: new URLSearchParams('bench=blade'),
-    census: () => 5,
-    foes: () => [{ ai: { feet: [0, 0, 10], height: 1.8 }, entity: { health: 40, maxHealth: 40 }, dead: false }],
-    attack: (held) => pressed.push(!!held),
-  });
+  const a = arena();
+  const w = fakeWorld({ scene: 'dungeon', params: new URLSearchParams('bench=blade'), census: () => 5, ...a, attack: (held) => pressed.push(!!held) });
   w.play(5 + 6);
   assert.deepEqual(w.asked.prepared, ['blade'], 'the leg prepared its gear once, through the host\'s own door');
   const swings = w.asked.press.filter((c) => c === 'Mouse1').length;
@@ -209,39 +221,29 @@ test('BENCH1 host: the fight legs press ONE swing code on the cadence, and the h
   assert.ok(pressed.includes(false), 'and let go between swings, because a bow fires on the release');
   assert.ok(pressed.filter(Boolean).length < pressed.length, 'a hold that never ends is not a swing');
   assert.ok(SWING_MS < SWING_EVERY_MS, 'a swing ends before the next begins, or the hold never releases');
+  assert.equal(w.asked.press.includes('KeyW'), false, 'the body is ROOTED: a fight leg never presses Walk Forward');
+  assert.ok(a.said.restocked > 0, 'and the leg asks the arena to restock its ring every frame it fights');
 });
 
-test('BENCH1 host: a fight that takes nothing off the foes is a named failure - flailing is not combat', () => {
-  const w = fakeWorld({
-    scene: 'dungeon',
-    params: new URLSearchParams('bench=blade'),
-    census: () => 5,
-    foes: () => [{ ai: { feet: [0, 0, 10], height: 1.8 }, entity: { health: 40, maxHealth: 40 }, dead: false }],
-    foeHealth: () => 40,   // never falls: every blow missed
-  });
+test('BENCH1 host: a fight that kills no rat is a named failure - flailing is not combat', () => {
+  const w = fakeWorld({ scene: 'dungeon', params: new URLSearchParams('bench=blade'), census: () => 5, ...arena() });   // the kill count never moves
   w.play(5 + 20 + 1);
   const s = w.host.surface;
   assert.equal(s.state, 'failed');
-  assert.match(s.report.failures.join(' | '), /no blow landed/);
-  assert.equal(s.report.legs[0].damage, 0, 'and the card says what the leg actually took off them');
+  assert.match(s.report.failures.join(' | '), /no rat was killed/);
+  assert.equal(s.report.legs[0].kills, 0, 'and the card says what the leg actually put down');
 });
 
-test('BENCH1 host: a fight leg whose blows land reports the damage, and the run passes', () => {
-  let health = 40;
-  const w = fakeWorld({
-    scene: 'dungeon',
-    params: new URLSearchParams('bench=blade'),
-    census: () => 5,
-    foes: () => [{ ai: { feet: [0, 0, 10], height: 1.8 }, entity: { health, maxHealth: 40 }, dead: false }],
-    foeHealth: () => health,
-  });
+test('BENCH1 host: a fight leg that kills reports its kills, and the run passes', () => {
+  const a = arena();
+  const w = fakeWorld({ scene: 'dungeon', params: new URLSearchParams('bench=blade'), census: () => 5, ...a });
   w.play(5 + 10);
-  health = 12;
+  a.said.kills = 2;   // two rats went down in the measured window
   w.play(20);
   const s = w.host.surface;
   assert.equal(s.state, 'done', JSON.stringify(s.report.failures));
-  assert.equal(s.report.legs[0].damage, 28, 'the health the leg\'s own blows took');
-  assert.match(s.report.legs[0].notes.join(' | '), /28 point\(s\) of foe health/);
+  assert.equal(s.report.legs[0].kills, 2, 'the rats the leg\'s own blows put down');
+  assert.match(s.report.legs[0].notes.join(' | '), /2 rat\(s\) killed/);
 });
 
 test("BENCH1 host: the dungeon walk is the ENGINE's route, followed waypoint by waypoint, not a straight line", () => {
