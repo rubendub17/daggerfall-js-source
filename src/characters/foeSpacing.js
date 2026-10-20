@@ -209,7 +209,11 @@ export function doorSpotsNear(doors, near, range = 40, doorOf = (e) => e) {
 
 /** AUDIT TACT C6/C7: the ACTION doors' doorways (an interior's inner swing doors, a dungeon's doors) as threshold spots -
  *  each door's CLOSED pose (its base matrix), its box's centre, the normal across its thin axis. `objects` an
- *  ActionSystem's (kind 'door'); within `range` of `near`. */
+ *  ActionSystem's (kind 'door'); within `range` of `near`.
+ *  BENCH1 adds the four facts a WALKER needs and a spaced-out pack never did: the door's `key`, whether it is
+ *  `closed` (IsClosed is the swing state 'start'), whether it is `locked` (IsLocked is currentLockValue > 0), and
+ *  whether it is a `special` door - the wall that swings, which no player opens. Additive: every reader that only
+ *  reads `pos`/`normal` is unaffected. */
 const _doorBoxes = new WeakMap();
 export function actionDoorSpots(objects, near, range = 30) {
   const out = [];
@@ -221,7 +225,14 @@ export function actionDoorSpots(objects, near, range = 30) {
     const cx = (box.min[0] + box.max[0]) / 2, cy = (box.min[1] + box.max[1]) / 2, cz = (box.min[2] + box.max[2]) / 2;
     if (near && Math.hypot(cx - near[0], cz - near[2]) > range) continue;
     const ex = box.max[0] - box.min[0], ez = box.max[2] - box.min[2];
-    out.push({ pos: [cx, cy, cz], normal: ex < ez ? [1, 0, 0] : [0, 0, 1] });   // a door is thin across its doorway
+    out.push({
+      key: o.key,
+      pos: [cx, cy, cz],
+      normal: ex < ez ? [1, 0, 0] : [0, 0, 1],   // a door is thin across its doorway
+      closed: o.state === 'start',
+      locked: (o.currentLockValue ?? 0) > 0,
+      special: !!o.special,
+    });
   }
   return out;
 }

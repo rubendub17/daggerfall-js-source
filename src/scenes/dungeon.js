@@ -13,7 +13,8 @@ import { noteLocalPlayer, tacticsNow, tickTactics } from '../ai/tactics.js';   /
 import { foeFrameDt } from '../characters/enemy/enemyMotor.js';   // AUDIT TACT: the foes' own step, for the brain's clock
 import { drawableBlows } from '../ai/foeBlows.js';   // TACT4
 import { techniqueMarksNow } from '../combat/techniques.js';   // TECH1: the player's own marks on the ground, after the foes'
-import { findPath, navSites } from '../ai/nav/navmesh.js';   // BENCH1: the dungeon walked on the mesh its own foes path over - never a straight line into a wall
+import { findPath } from '../ai/nav/navmesh.js';   // BENCH1: the dungeon walked on the mesh its own foes path over - never a straight line into a wall
+import { navSites } from '../systems/bench/dungeonPath.js';   // BENCH1: WHERE that walk may go - the floor's own places, one a polygon
 import { iilActive, iilDungeonLights, iilTorch, iilSyncLane } from '../systems/improvedInteriorLighting.js';   // IIL1
 import { Arch3dFile } from '../formats/arch3dFile.js';
 import { WORLD_FRAME } from '../render/renderer.js';   // AUDIT-EL F5
@@ -61,6 +62,7 @@ import { pickFoe,   // TI1: the lock-on pick
 // AUDIT 63 F33: PlayerActivate.ActivateMobileEnemy (:800-841) - the
 // standalone dungeon's copy of the living-foe arm.
 import { tryMobileEnemyActivate } from '../player/mobileEnemyActivate.js';
+import { actionDoorSpots } from '../characters/foeSpacing.js';   // BENCH1: the doors near the walk, as the pack's own spacing law reads them (key, swing state, lock)
 import { FOUND_NOTHING_VALUABLE_TEXT_ID } from '../systems/talk/talk.js';   // GetRandomText(8999)
 import { hideWorldPlaque, destroyWorldPlaque } from '../ui/worldPlaque.js';   // AUDIT-WH H4: the plaque's hide door, for the overlay branch that returns above drawFoes
 import { quickLootWheel, quickLootArm } from '../systems/quickLoot.js';   // QUICK-LOOT B4: the plaque owns the wheel while it lists, and the two keys arm what the next activate means
@@ -87,7 +89,7 @@ import { CameraRecoiler } from '../player/cameraRecoiler.js';   // AUDIT 28 W9: 
 import { HeadBobber } from '../player/headBobber.js';   // AUDIT 28 W10: HeadBobbing
 import { createClimbFeelHost } from '../player/climb/climbFeel.js'; import { playerClimbStrain, playerBlowFrame } from './hostCombat.js';   // CLIMB4: the climb's camera, and its effort's voice
 import { lastHealthLost, lastHealthLostPercent } from '../ui/hud/hudVitals.js';   // AUDIT 28 W9: the detector's loss
-import { createDungeonBench } from './benchHost.js';   // BENCH1: the benchmark, as a mode of this host - the dungeon walked and one ring of foes fought three ways
+import { createDungeonBench, DOOR_LOOK_M } from './benchHost.js';   // BENCH1: the benchmark, as a mode of this host - the dungeon walked and one ring of foes fought three ways
 import { codeForAction } from '../systems/inputActions.js';   // BENCH1: the bench presses the player's OWN bindings, read here rather than assumed
 import { equipItem } from '../systems/equip.js';   // BENCH1: the bow the fight leg carries, through the game's own equip table
 import { fieldOfView } from '../ui/viewSettings.js';   // MENU: Video/FieldOfView, one home for five hosts
@@ -329,6 +331,13 @@ const bench = params.has('bench') ? createDungeonBench({
   // arena's rats walks to them and back (the owner: "in the dungeon the guy isn't going through the
   // dungeon"); offered the floor, it crosses rooms and turns corners.
   sites: () => navSites(navMeshOf()),
+  // AND THE DOORS THE WALK MUST OPEN FOR ITSELF. A dungeon's navmesh leaves an unlocked action door out
+  // of the wall (the door is one its own foes walk through), so a route crosses a shut door: the page
+  // says which closed ones are near, and the bench presses the player's own Activate binding at them.
+  doors: () => actionDoorSpots(ctx.actions?.objects, player.pos, DOOR_LOOK_M),
+  // AND WHETHER A LIGHT OF OURS IS BURNING, so the torch is asked for again while it is not (a press is
+  // refused while both hands hold a weapon, and the walk needs the light).
+  lit: () => !!playerEntity.lightSource,
   document: globalThis.document,
 }) : null;
   console.log(`[spawn] marker ${JSON.stringify(ctx.startMarker)} -> feet [${spawn.map((v) => v.toFixed(3)).join(', ')}] (startSpawn build)`);

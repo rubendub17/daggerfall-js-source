@@ -55,11 +55,37 @@ test('BENCH1 track: the turn is a rate, so a slow frame turns as far as a fast o
   assert.equal(steerTo({ ...q, dt: 10 }).lookDelta, Math.PI / 2);
 });
 
+test('BENCH1 track: the reach is the caller\'s too - a dungeon walker does not stop two metres short of the corner it is steering at', () => {
+  // A street's waypoint is arrived at from 2.5 m; a corridor's is a corner the next leg of the route
+  // starts from. The dungeon walk leaves its waypoints behind at WALK_WAYPOINT_M and steers by the same
+  // number, or the body stands still between the two: the steerer would call it arrived and release the
+  // walk key, while the route would not leave the waypoint behind.
+  const street = { at: [0, 0, 0], heading: 0, target: [0, 0, 1.2], dt: 1 / 60 };
+  assert.equal(steerTo(street).reached, true, `1.2 m is inside the track's own ${REACH_M} m`);
+  assert.equal(steerTo({ ...street, reach: 0.6 }).reached, false, 'and outside the corridor\'s - the body keeps walking to it');
+  assert.equal(steerTo({ ...street, reach: 0.6 }).forward, true);
+  assert.equal(steerTo({ at: [0, 0, 0], heading: 0, target: [0, 0, 0.6], reach: 0.6 }).reached, true, 'at its own reach it has arrived');
+  assert.equal(steerTo({ ...street, reach: NaN }).reached, true, 'a reach that is not a number falls back to the track\'s');
+});
+
 test('BENCH1 track: a waypoint inside REACH_M is arrived at, and the look is left alone', () => {
   const s = steerTo({ at: [0, 0, 0], heading: 0, target: [0, 0, REACH_M - 0.1], dt: 1 / 60 });
   assert.equal(s.reached, true);
   assert.equal(s.forward, false);
   assert.equal(s.lookDelta, 0);
+});
+
+test('BENCH1 track: the caller may tighten the facing gate - a corridor is walked facing it, a street is not', () => {
+  // A dungeon's corridor is two metres wide: a bot that walks forward while 90 degrees off the bearing
+  // walks diagonally into the jamb. So the gate is the caller's - the street keeps the wide one and
+  // the dungeon walk hands in its own - and the look keeps turning either way.
+  const q = { at: [0, 0, 0], heading: 0, target: [10, 0, 0], dt: 1 / 60 };   // a quarter turn off the bearing
+  assert.equal(steerTo(q).forward, true, `the track's own ${WALK_WITHIN_RAD} rad walks through a quarter turn`);
+  const tight = steerTo({ ...q, withinRad: 0.8 });
+  assert.equal(tight.forward, false, 'the tighter gate stands and turns first');
+  assert.equal(tight.lookDelta, TURN_RATE_RAD_S / 60, 'and the look is still asked for the tick\'s turn - standing still is not standing blind');
+  assert.equal(steerTo({ ...q, withinRad: Math.PI / 2 + 0.01 }).forward, true, 'the gate is the caller\'s number, not a fixed rule');
+  assert.equal(steerTo({ ...q, withinRad: NaN }).forward, true, 'a gate that is not a number falls back to the walk\'s own');
 });
 
 test('BENCH1 track: nextWaypoint walks the cursor forward, so a shove re-aims at the NEXT waypoint', () => {

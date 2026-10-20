@@ -89,16 +89,24 @@ export function nextWaypoint(track, at, from = 0) {
 
 /**
  * One tick's intent, from where the character stands to the waypoint it is walking at.
- * @param {{ at:number[], heading:number, target:any, dt:number }} q `heading` is the camera yaw, `dt` seconds
+ * @param {{ at:number[], heading:number, target:any, dt:number, withinRad?:number, reach?:number }} q
+ *   `heading` is the camera yaw, `dt` seconds; `withinRad` is how far off the bearing the bot will
+ *   still walk - a street can be crossed at any angle (`WALK_WITHIN_RAD`), a dungeon corridor cannot,
+ *   so the dungeon walk hands in a tighter gate and the body turns on the spot before it walks into
+ *   the jamb; `reach` is how near the waypoint counts as arrived - the track's own `REACH_M` by
+ *   default, and the dungeon walk hands in ITS waypoint reach, because a steerer that stands two and
+ *   a half metres short of a corner the walk is still steering at never arrives at anything.
  * @returns {{ forward:boolean, lookDelta:number, reached:boolean, distance:number, bearing:number }}
  */
-export function steerTo({ at, heading, target, dt = 1 / 60 }) {
+export function steerTo({ at, heading, target, dt = 1 / 60, withinRad = WALK_WITHIN_RAD, reach = REACH_M }) {
   const distance = distanceTo(at, target);
   const bearing = bearingTo(at, target);
-  const reached = !(distance > 0) || distance <= REACH_M;
+  const near = Number.isFinite(reach) ? Math.max(0, reach) : REACH_M;
+  const reached = !(distance > 0) || distance <= near;
   const step = Math.max(0, Number(dt) || 0) * TURN_RATE_RAD_S;
   const lookDelta = reached ? 0 : Math.max(-step, Math.min(step, wrapAngle(bearing - heading)));
-  return { forward: !reached && Math.abs(wrapAngle(bearing - heading)) <= WALK_WITHIN_RAD, lookDelta, reached, distance, bearing };
+  const gate = Number.isFinite(withinRad) ? Math.max(0, withinRad) : WALK_WITHIN_RAD;
+  return { forward: !reached && Math.abs(wrapAngle(bearing - heading)) <= gate, lookDelta, reached, distance, bearing };
 }
 
 /**

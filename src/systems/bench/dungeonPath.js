@@ -13,18 +13,21 @@
 // (src/ai/enhancedMotor.js) walks the same waypoints for the game's NPCs; this is the same walk with a
 // coarser hand on it.
 //
-// SO WHAT IS LEFT HERE IS THE COARSE PART, the part a bot steering a CAMERA owes a corridor: which of
-// the candidate destinations can be reached at all (a foe in an unreachable room is a leg spent
-// staring at a wall, and it must say so as a null rather than as twenty seconds of standing still),
-// which waypoint is next within a reach wider than the engine's own 0.45 m - the bench steers a look
-// and not a capsule, and a camera's idea of "arrived" is a metre rather than a body's width - and how
-// far the walk actually went, so "the walk went somewhere" is a number in the report rather than an
-// argument from the screenshots.
+// SO WHAT IS LEFT HERE IS THE COARSE PART, the part a bot steering a CAMERA owes a corridor: WHICH
+// PLACES are even candidates (the dungeon's own floor, one centre per navmesh polygon - `walkGoals`;
+// the foes are only the fallback, because a walk offered nothing but the two rats the fight legs left
+// standing walks to them and back and never crosses the dungeon), which of them can be reached at all
+// (a room in an unreachable part is a leg spent staring at a wall, and it must say so as a null rather
+// than as twenty seconds of standing still), which waypoint is next within a reach wider than the
+// engine's own 0.45 m - the bench steers a look and not a capsule, and a camera's idea of "arrived" is
+// a metre rather than a body's width - and how far the walk actually went, so "the walk went
+// somewhere" is a number in the report rather than an argument from the screenshots.
 //
 // Pure: the query is a parameter, the body is `at`, and nothing here owns a clock. The same code is
 // tested on a fake dungeon in test/systems/bench/dungeonPath.test.js and plans the real one in the page.
 
 import { distanceTo } from './track.js';
+import { polyHeight } from '../../ai/nav/navmesh.js';   // the mesh's OWN height layer: a place's y is the floor there, on that polygon's level
 
 /** How near a waypoint counts as reached. The engine's own follower uses WP_REACH 0.45 m for a body;
  *  a bot steering a camera cuts the corner far wider than a capsule can, so 1.2 m is the same idea at
@@ -99,19 +102,120 @@ export function pickWalk({ plan, from, goals, maxGoals = PATH_MAX_GOALS } = {}) 
   return null;
 }
 
+/** How many of a walk's questions are kept for FOES. The dungeon's floor is what the walk crosses, but
+ *  a page whose mesh cannot join its own centre to anywhere still has the foes the fight legs left
+ *  standing: a leg that asked only the floor would report "no route to walk" over a room it could
+ *  cross. Two is a fallback, not a plan. */
+export const PATH_FOE_GOALS = 2;
+
+/** THE WALKABLE FLOOR AS PLACES: one point per polygon of the dungeon's own baked navmesh - its
+ *  centre, in world [x, y, z], with the height the agent rides there (navmesh.js `polyHeight`, on that
+ *  polygon's own level, so a stacked dungeon's upper floor is not answered with the tallest top under
+ *  it - `findPath` picks each endpoint's LEVEL from its y).
+ *
+ *  `chf` is the bake the dungeon's own foes path over (`EnhancedEnemyAI`'s `nav()`), and this reads it
+ *  the way the bake wrote it: `mesh.verts` are in GRID units (cells, relative to the mesh's origin),
+ *  so a centre is `xmin + x * cs` in the world - the conversion `solvePath` itself uses.
+ *
+ *  A query about STANDING, not a second path-finder: the polys are the floor the bake has already
+ *  called walkable and joined, so a body standing on one of these centres is standing on floor the
+ *  engine can locate, and a route to it is the engine's own `findPath`. Nothing here chooses a route;
+ *  `walkGoals` chooses which of these places to ASK about. A page whose bake has not landed, or a
+ *  polygon naming a vertex the mesh has not got, is skipped - a mesh with no places answers [], which
+ *  is the truth and not an error.
+ * @param {any} chf the compact heightfield the bake left (`{ cs, xmin, zmin, mesh: { verts, polys } }`)
+ * @returns {Array<number[]>} one [x, y, z] a polygon
+ */
+export function navSites(chf) {
+  const mesh = chf?.mesh;
+  if (!mesh || !Array.isArray(mesh.polys) || !mesh.polys.length) return [];
+  const { cs, xmin, zmin } = chf;
+  const out = [];
+  for (let pi = 0; pi < mesh.polys.length; pi++) {
+    const verts = mesh.polys[pi]?.verts;
+    if (!Array.isArray(verts) || !verts.length) continue;
+    let gx = 0, gz = 0;
+    for (const gi of verts) { const v = mesh.verts[gi]; gx += v?.x ?? NaN; gz += v?.z ?? NaN; }
+    if (!Number.isFinite(gx) || !Number.isFinite(gz)) continue;   // a vertex the mesh has not got: no place
+    const wx = xmin + (gx / verts.length) * cs, wz = zmin + (gz / verts.length) * cs;
+    out.push([wx, polyHeight(chf, pi, wx, wz) ?? 0, wz]);
+  }
+  return out;
+}
+
+/**
+ * THE DESTINATIONS A DUNGEON WALK ASKS THE ENGINE ABOUT, best first.
+ *
+ * A dungeon walk used to be offered only the foes: it walked to the two rats the fight legs left
+ * standing, turned round and walked back - "in the dungeon the guy isn't going through the dungeon"
+ * (the owner). The thing to cross is the dungeon, and the mesh already holds it: `sites` are the
+ * floor's own centres (one per polygon, this module's `navSites`). So the floor's places are the
+ * walk's destinations and the foes are its fallback.
+ *
+ * FARTHEST FIRST, SPREAD ACROSS THE RANGE: the places are sorted by distance and sampled with a
+ * stride, so the leg's handful of questions cover the whole dungeon instead of the handful of rooms
+ * round the body. The farthest one the engine can reach is the one walked to (`pickWalk` takes the
+ * first that answers) - a route across the floor - and when the far end is a floor the mesh cannot
+ * join, the questions come back down the range rather than giving up.
+ *
+ * AND NOTHING THIS LEG HAS ALREADY WALKED TO: a place within `visitedM` of one in `seen` is dropped,
+ * so the walk crosses the dungeon room by room instead of returning to the room it started in.
+ * `seen` is the caller's memory; this function only reads it. `visitedM` of 0 means no memory.
+ *
+ * @param {{ sites?: Array<number[]>, foes?: Array<number[]>, seen?: Array<number[]>, from: number[],
+ *           maxGoals?: number, visitedM?: number, minStepM?: number }} q
+ * @returns {Array<number[]>} the goals, in the order the engine is asked for them
+ */
+export function walkGoals({ sites = [], foes = [], seen = [], from, maxGoals = PATH_MAX_GOALS, visitedM = 0, minStepM = PATH_MIN_STEP_M } = {}) {
+  const start = pointOf(from);
+  if (!start) return [];
+  const cap = Number.isFinite(Number(maxGoals)) ? Math.max(0, Math.floor(Number(maxGoals))) : PATH_MAX_GOALS;
+  if (!cap) return [];
+  const visited = Array.isArray(seen) ? seen : [];
+  const usable = (p) => {
+    const q = pointOf(p);
+    if (!q) return null;
+    if (!(distanceTo(start, q) >= minStepM)) return null;   // at the body's own feet: a turn, not a walk
+    if (visitedM > 0 && visited.some((v) => distanceTo(v, q) <= visitedM)) return null;   // already walked to
+    return q;
+  };
+  /** The usable points, farthest from the body first - the far end of the dungeon is the walk. */
+  const farFirst = (list) => (Array.isArray(list) ? list : []).map(usable).filter(Boolean)
+    .sort((a, b) => distanceTo(start, b) - distanceTo(start, a));
+  const places = farFirst(sites);
+  const foeGoals = farFirst(foes);
+  // THE FOES KEEP THEIR QUESTIONS even when the floor offers more places than a leg may ask about.
+  const siteCap = Math.max(0, cap - Math.min(PATH_FOE_GOALS, foeGoals.length));
+  const stride = Math.max(1, Math.ceil(places.length / Math.max(1, siteCap)));
+  const goals = [];
+  for (let i = 0; i < places.length && goals.length < siteCap; i += stride) goals.push(places[i]);
+  for (const g of foeGoals) { if (goals.length >= cap) break; goals.push(g); }
+  return goals;
+}
+
 /** Where the walk is now: given the path and the cursor index, answer the point to steer at and
  *  the new cursor. A waypoint within `reach` is behind us; the path is done when the last one is.
  *  Answers { index, done, target }. Never moves the cursor backwards.
  *
  *  FORWARD ONLY is the whole of it: a body shoved back by a foe, dropped by a stair or knocked off the
  *  route re-aims at the waypoint AHEAD and not the one behind it - the same law as the track's own
- *  steerer, and what keeps a dungeon walk a walk instead of an oscillation in a doorway. */
+ *  steerer, and what keeps a dungeon walk a walk instead of an oscillation in a doorway.
+ *
+ *  AND A WAYPOINT THE BODY HAS ALREADY GOT PAST IS BEHIND IT, whatever the reach says. A camera
+ *  reaches 0.6 m; a body at a run covers more than that between two frames of the machine this
+ *  benchmark exists to measure, so "within the reach" alone reads a passed corner as one still
+ *  ahead and the walk turns round in the corridor. Nearer the NEXT waypoint than this one is the
+ *  same law at a slower clock: the point is behind, steer at the next. */
 export function advancePath(path, cursor, at, reach = PATH_REACH_M) {
   if (!Array.isArray(path) || !path.length) return { index: 0, done: true, target: null };
   const near = Number.isFinite(Number(reach)) ? Math.max(0, Number(reach)) : PATH_REACH_M;
   const from = Math.max(0, Math.floor(Number(cursor) || 0));
   for (let i = from; i < path.length; i++) {
-    if (distanceTo(at, path[i]) > near) return { index: i, done: false, target: path[i] };
+    const distance = distanceTo(at, path[i]);
+    if (distance <= near) continue;
+    const next = path[i + 1];
+    if (next && distanceTo(at, next) < distance) continue;   // passed between two frames: it is behind
+    return { index: i, done: false, target: path[i] };
   }
   return { index: Math.max(from, path.length), done: true, target: null };
 }

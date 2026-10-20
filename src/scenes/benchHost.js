@@ -28,7 +28,7 @@
 import { BENCH_LEGS, BENCH_PRESET, BENCH_VITAL, legsOf, scoreOf, censusOk, parseLegs } from '../systems/bench/law.js';
 import { summarise } from '../systems/bench/recorder.js';
 import { createBenchBot } from '../systems/bench/bot.js';
-import { nextWaypoint, trackLength, validateTrack, distanceTo } from '../systems/bench/track.js';
+import { nextWaypoint, trackLength, validateTrack, distanceTo, bearingTo, wrapAngle } from '../systems/bench/track.js';
 import { planRoute, snapToWalkable, seededRandom } from '../systems/bench/route.js';   // BENCH1: a street route off the town's own navigation grid, the same route every run
 import { townCentreOf } from './seatBanners.js';   // BENCH1: the town's own middle - the point the Seats hang their banners on, not the mean of its blocks
 import { BENCH_TRACKS } from '../systems/bench/tracks.js';
@@ -50,12 +50,20 @@ export const BOW_DRAW_MS = 900;
 /** THE ARENA. Every fight leg is measured in the SAME place - the floor the dungeon's own boot stood the
  *  body on - with the body ROOTED there: it turns and looks, it does not walk (the owner: "all the
  *  fighting dungeons should be same space, character can't move its location, it can look at
- *  enemies"). A fixed venue is also what makes two legs comparable: same room, same light, same floor. */
-export const ARENA_SPOT_M = 2;      // the NEAR rat, metres - inside the blade's own 2.5 m reach
-export const ARENA_FAR_M = 6;       // the FAR rat, metres - room for an arrow to become one
-export const ARENA_SIDE_M = 1.4;    // and how far to either side, so the two do not overlap
-export const ARENA_RATS = 2;        // the ring: always this many alive, restocked as they die
+ *  enemies"). A fixed venue is also what makes two legs comparable: same room, same light, same floor.
+ *  FOUR, IN TWO RANKS, and the ring is kept at four: a melee leg kills what is in its reach, so a ring of
+ *  two left the archer and the mage facing an empty room (the owner: "the one rat died in the mele fight
+ *  and archer and magic only stare at the floor and cast stuff"). */
+export const ARENA_SPOT_M = 2.5;    // the NEAR rank, metres - inside the blade's own 2.5 m reach
+export const ARENA_FAR_M = 7;       // the FAR rank, metres - room for an arrow to become one
+export const ARENA_SIDE_M = 1.4;    // how far either side of the body the near pair stands
+export const ARENA_FAR_SIDE_M = 2.6;   // and the far pair, wider so the four are not a column
+export const ARENA_RATS = 4;        // the ring: always this many alive, restocked as they die
 export const ARENA_KEEP_M = 18;     // a rat this near is the arena's; anything further is the layout's
+/** How many rats the arena asks its spawner for in one frame. A spawner builds a sprite body, a career
+ *  and an AI, and four of those in one frame is a hitch the benchmark would then measure as the
+ *  dungeon's; one a frame fills the ring inside a tenth of a second. */
+export const ARENA_SPAWNS_PER_FRAME = 1;
 /** How long a CAST is held, and how often the next begins, milliseconds. A spell is slower than a
  *  swing on purpose: the owner watched the mage leg and said "in the mage put a timeout between
  *  spells, it's spamming too much" - a cast costs mana and the ready must be re-made between casts,
@@ -103,6 +111,29 @@ export const WALK_FACE_RAD = 0.8;
 /** The ground a walked dungeon owes its leg, metres. Under it the body was turning on the spot, or
  *  pinned by a jamb, for the whole window - a walk that went nowhere, whatever the frames say. */
 export const WALK_MIN_M = 8;
+/** THE DOORS ON THE WALK. A dungeon's navmesh leaves an UNLOCKED ACTION DOOR out of the wall it bakes -
+ *  the door is one of the doors its own foes walk through - so a route crosses a shut door and the body
+ *  walks its nose into the panel, which is exactly what a person watching saw ("how it walk but cant
+ *  open doors"). So the walker opens them the way a person does: look at the door, press the player's
+ *  own Activate binding, and let the host's PlayerActivate do the rest. `DOOR_LOOK_M` is how far the
+ *  page reports doors from, `DOOR_OPEN_M` the reach the walker presses one from (inside the player's
+ *  own activation ray), and `DOOR_PRESS_MS` how often a door it cannot open yet is asked again. */
+export const DOOR_LOOK_M = 6;
+export const DOOR_OPEN_M = 2.4;
+export const DOOR_PRESS_MS = 700;
+/** How far off the bearing a door may be and still be one the walk is walking THROUGH, radians - a door
+ *  behind the shoulder is one the route will come back for, and a press at it would open the way the
+ *  body is not going. */
+export const DOOR_FACE_RAD = 1.2;
+/** How many times a run will ask for its torch before it leaves the dungeon as dark as it found it, and
+ *  how long between asks, milliseconds. A press is refused while both hands hold a weapon (the bow leg
+ *  is exactly that), so the light is asked for again once a hand is free. */
+export const TORCH_TRIES = 6;
+export const TORCH_AGAIN_MS = 1200;
+/** How many times the arena asks its spawner to fill ONE slot. A spawner that refuses its spot (inside a
+ *  wall, a missing career file) answers null; asking it for ever would spend the leg, so a slot gives up
+ *  after a handful and the leg says by name that the ring stood short. */
+export const ARENA_SPAWN_TRIES = 4;
 /** How near a waypoint counts as reached while WALKING a dungeon route, metres. The dungeon's own foe
  *  AI reaches its waypoints at 0.45 m; a looser 1.2 m cuts the corner of a corridor and walks the body
  *  into the wall it cut. */
@@ -405,9 +436,7 @@ export function createDungeonBench(host) {
   let drew = false;
   let drawTries = 0;
   let walkNext = false;
-  let ratKills = 0;             // how many the leg has killed - the arena's own damage proof
-  let ratRefs = [];             // the arena's own rats - kept at ARENA_RATS alive, restocked as they die
-  let ratsPending = 0;          // spawns in flight, so a slow one is not asked for twice
+  let ratKills = 0;             // how many the leg has killed - the arena's own proof that a fight happened
   /** A NEW LEG'S WEAPON IS A NEW DRAW. `armGear` equips the leg's own weapon, and an equip puts the
    *  weapon AWAY (`playerWeapon.sheathed` goes true on the swap) - so the bow leg began with the
    *  Ready Weapon press already spent on the blade's, the rig refusing every press behind
@@ -443,21 +472,50 @@ export function createDungeonBench(host) {
     }, READY_HOLD_MS);
   };
 
-  /** LIGHT THE DUNGEON, ONCE. A dungeon is dark until somebody lights something - that is the
-   *  game, not a benchmark bug - and a run nobody can see is not a run the owner can judge (the second
-   *  watch: "the guy isn't going through the dungeon", over a screen the torches could not reach). So
-   *  the run presses the player's OWN Light-or-douse binding once, before the first leg. A body
-   *  carrying no light is unaffected: the press lands on the empty slot and the dungeon stays as dark
-   *  as the character found it. */
+  /** THE LIGHT IN THE HAND. A dungeon is dark until somebody lights something, and the pinned character
+   *  carries nothing to light - the run pressed the player's own Light-or-douse binding for a whole
+   *  release and the dungeon stayed black. So the torch is STOWED first, exactly the way the quiver is:
+   *  a row of the Test Room's own table, minted by its own producer, never by this module (ONE DFU
+   *  MEMBER, ONE EXPORT - a second item table is how two of them disagree). */
+  let torchStowed = false;
+  const stowTorch = () => {
+    if (torchStowed || typeof host.stow !== 'function') return;
+    const torch = testGearRows(host.entity?.()?.gender).find((r) => r.kind === 'light');
+    if (!torch) return;
+    try { host.stow(testItemOf(torch)); torchStowed = true; } catch { /* a pack that refused */ }
+  };
+  /** Is a light of ours burning? The page's own read; a page that cannot answer is trusted (its press is
+   *  the only evidence there is, and asking twice would douse the torch it just lit). */
+  const litNow = () => (typeof host.lit === 'function' ? !!host.lit() : lit);
+  /** Free a hand for the light. A drawn bow takes both, and Handheld Torches refuses the press behind
+   *  it ("no free hand") - so the Ready Weapon door is pressed while the page says a weapon IS out. It is
+   *  the same toggle the draw uses, which is why it is asked only once the page has answered. */
+  const freeHand = () => {
+    if (typeof host.drawn !== 'function' || !host.drawn()) return;
+    try { host.ready?.(); } catch { /* a rig that refused */ }
+  };
+  /** LIGHT THE DUNGEON. A dungeon is dark until somebody lights something - that is the game, not a
+   *  benchmark bug - and a run nobody can see is not a run the owner can judge (the second watch: "the
+   *  guy isn't going through the dungeon", over a screen the torches could not reach). The press is the
+   *  player's OWN Light-or-douse binding, the torch is the pack's, and the ask is repeated while the page
+   *  says it is still dark: the first press of a run is regularly refused because the last leg's weapon
+   *  still has both hands. A press that DID light it is not repeated - that would douse it. */
   let lit = false;
-  const lightUp = () => {
-    if (lit) return;
-    lit = true;
+  let torchTries = 0;
+  const lightUp = (freeIt = false) => {
+    if (litNow()) { lit = true; return; }
+    if (torchTries >= TORCH_TRIES) return;
     let code = null;
     try { code = host.codeForAction?.(host.bindings?.(), 'TorchToggleLight') ?? null; } catch { code = null; }
     if (!code) return;
+    torchTries++;
+    stowTorch();
+    // ASKED ONLY ON THE WALK: a fight leg's hands are FULL ON PURPOSE (a drawn bow is the bow leg's
+    // whole subject), and putting the weapon away to light a torch would measure a different leg.
+    if (freeIt) freeHand();
     hostSyntheticKey('keydown', code);
     globalThis.setTimeout?.(() => hostSyntheticKey('keyup', code), READY_HOLD_MS);
+    globalThis.setTimeout?.(() => { if (!litNow()) lightUp(freeIt); }, TORCH_AGAIN_MS);
   };
   /** Stand the body in the fight: on the line between it and the nearest live foe, at striking
    *  distance. Answers whether it moved - a page that offers no warp keeps the body where it is and
@@ -473,41 +531,43 @@ export function createDungeonBench(host) {
     if (!spot) return false;
     return host.warp?.(spot) !== false;
   };
-  /** Where a rat is stood: in front of the body, to one side or the other, so the two are a pair and
+  /** THE RING'S FOUR SLOTS: two at arm's length for the blade, two across the room for the bow and the
+   *  spell. Each slot remembers the rat standing in it, so a rat that falls leaves ITS place to be filled
+   *  again - the ring never drifts into one rank, and the archer's far rat is never the one the blade's
+   *  last blow stood two metres away. */
+  const ring = Object.freeze([-ARENA_SIDE_M, ARENA_SIDE_M, -ARENA_FAR_SIDE_M, ARENA_FAR_SIDE_M].map((side, i) => (
+    { side, away: i < 2 ? ARENA_SPOT_M : ARENA_FAR_M, rec: null, pending: false, tries: 0 }
+  )));
+  /** Where a rat is stood: in front of the body, to one side or the other, so the four are a ring and
    *  not a stack. */
-  const ratSpot = (side, heading, at, away = ARENA_SPOT_M) => [
+  const ratSpot = (side, heading, at, away) => [
     at[0] + Math.sin(heading) * away + Math.cos(heading) * side,
     at[1],
     at[2] + Math.cos(heading) * away - Math.sin(heading) * side,
   ];
-  /** KEEP THE RING AT ARENA_RATS. A leg that kills its rats and then swings at a wall for the rest of its
-   *  window measures nothing; the arena restocks as they fall, which is also what a person watching
-   *  expects to see. Only a rat standing in the ring counts - the layout's own foes are not the arena's. */
+  /** KEEP THE RING AT FOUR. A leg that kills its rats and then swings at a wall for the rest of its window
+   *  measures nothing, and a ring of two left the archer and the caster with an empty room - "the one rat
+   *  died in the mele fight and archer and magic only stare at the floor". A slot's rat that is DEAD, or
+   *  GONE (chased past the ring, or a body that never landed), is no rat: the slot is filled again. Only
+   *  the ring's own rats count; the layout's are not the arena's. */
   const restock = (heading, at) => {
     if (typeof host.spawnRat !== 'function') return;
-    for (const r of ratRefs) if (r?.dead) ratKills++;   // a fallen rat is the proof; a restock is the ring
-    ratRefs = ratRefs.filter((r) => r && !r.dead);
-    let ring = ratRefs.filter((r) => { const f = foeFeet(r); return f && distanceTo(f, at) < ARENA_KEEP_M; });
-    let asks = 0;
-    while (ring.length + ratsPending < ARENA_RATS && asks < ARENA_RATS) {
-      // ONE AT ARM'S LENGTH, ONE ACROSS THE ROOM: a blade reaches 2.5 m and a bow's shaft spawns at the
-      // bow, so a single distance cannot serve both. The blade and the spell fight the near rat; the bow
-      // fights the far one (see `want` below).
-      const first = (ring.length + ratsPending) % 2 === 0;
-      const side = first ? -ARENA_SIDE_M : ARENA_SIDE_M;
-      const pos = ratSpot(side, heading, at, first ? ARENA_SPOT_M : ARENA_FAR_M);
-      asks++;
-      ratsPending++;
+    let asked = 0;
+    for (const slot of ring) {
+      if (slot.rec) {
+        if (slot.rec.dead) { ratKills++; slot.rec = null; }   // a fallen rat is the proof a fight happened
+        else { const f = foeFeet(slot.rec); if (!f || distanceTo(f, at) > ARENA_KEEP_M) slot.rec = null; }
+      }
+      if (slot.rec || slot.pending || asked >= ARENA_SPAWNS_PER_FRAME || slot.tries >= ARENA_SPAWN_TRIES) continue;
+      asked++;
+      slot.pending = true;
+      slot.tries++;
+      const done = (rec) => { slot.pending = false; if (rec && !rec.dead) { slot.rec = rec; slot.tries = 0; } };
       try {
-        const made = host.spawnRat(pos);
-        if (made && typeof made.then === 'function') {
-          made.then((rec) => { ratsPending--; if (rec && !rec.dead) ratRefs.push(rec); }).catch(() => { ratsPending--; });
-        } else {
-          ratsPending--;
-          if (made && !made.dead) ratRefs.push(made);
-        }
-      } catch { ratsPending--; }
-      ring = ring.concat([{}]);
+        const made = host.spawnRat(ratSpot(slot.side, heading, at, slot.away));
+        if (made && typeof made.then === 'function') made.then(done).catch(() => { slot.pending = false; });
+        else done(made);
+      } catch { slot.pending = false; }
     }
   };
   return createBenchHost({
@@ -521,7 +581,9 @@ export function createDungeonBench(host) {
     codes: () => {
       const store = host.bindings();
       const of = (action) => host.codeForAction(store, action);
-      return { forward: of('MoveForwards'), run: of('Run'), swing: of('SwingWeapon') };
+      // `activate` is the player's OWN ActivateCenterObject - the door a person's E is (PlayerActivate),
+      // so a walker opens a dungeon's doors with the key the player has, not with a bench-only door.
+      return { forward: of('MoveForwards'), run: of('Run'), swing: of('SwingWeapon'), activate: of('ActivateCenterObject') };
     },
     entity: host.entity,
     renderer: host.renderer ?? null,
@@ -535,15 +597,23 @@ export function createDungeonBench(host) {
     settleCeilingMs: MESH_WAIT_MS,
     census: (key) => (key === 'foes' ? (host.foes?.()?.length ?? 0) : null),
     prepareLeg: (id) => {
-      lightUp();   // a dungeon nobody can see is a run nobody can judge
       walkNext = id === 'dungeon';
       armGear(id);
       forgetTheDraw();   // this leg's weapon was just put away by its own equip: draw it again
-      // THE WALK BEGINS WHERE THE DUNGEON BEGINS. A fight leg has just stood the body at a foe's
-      // shoulder - regularly a corner no navmesh floor survived - and a route whose start cannot be
-      // placed is no route at all (the run before this one tried forty-two destinations and found
-      // none). The entry is the floor the enhanced AI's own bake anchors on.
-      if (walkNext) { try { host.warp?.(host.entry?.() ?? null); } catch { /* no entry: walk from where it stands */ } return; }
+      // THE WALK CARRIES THE LIGHT. Nothing the fight legs held is left in a hand - a drawn bow takes
+      // both, and the torch's own law refuses the press behind it - and the torch is asked for with a
+      // fresh budget, because the light is what makes the dungeon watchable at all.
+      if (walkNext) {
+        torchTries = 0;
+        lightUp(true);   // and it puts a weapon away first: a drawn bow has no hand for a torch
+        // AND IT BEGINS WHERE THE DUNGEON BEGINS. A fight leg has just stood the body at a foe's
+        // shoulder - regularly a corner no navmesh floor survived - and a route whose start cannot be
+        // placed is no route at all (the run before this one tried forty-two destinations and found
+        // none). The entry is the floor the enhanced AI's own bake anchors on.
+        try { host.warp?.(host.entry?.() ?? null); } catch { /* no entry: walk from where it stands */ }
+        return;
+      }
+      lightUp();   // a dungeon nobody can see is a run nobody can judge
       // THE WEAPON IS DRAWN FOR THE WEAPONS, AND THE CASTER KEEPS IT AWAY. A readied spell fires
       // through a sheathed hand (`playerAttackInput` runs `magic.interceptAttack` BEFORE the sheath
       // gate - DFU's cast is a component of its own), and `readyWeapon`'s own arm ABORTS a readied
@@ -561,23 +631,26 @@ export function createDungeonBench(host) {
     spawnRat: host.spawnRat ?? null,
     restockArena: restock,
     // THE RING'S OWN RAT, chosen by the weapon: `want` is 'near' (a blade's or a spell's) or 'far' (a
-    // bow's). Nearest-first otherwise, and only the arena's rats count - never the layout's 42.
+    // bow's). Nearest or farthest of the RING's rats - never the layout's, which stand behind walls the
+    // missile then hits. Answers null when the ring stands none, and the leg says so by name.
     arenaFoe: (at, want) => {
-      const live = ratRefs.filter((r) => r && !r.dead)
-        .map((r) => ({ r, p: foeFeet(r) }))
+      const live = ring.filter((s) => s.rec && !s.rec.dead)
+        .map((s) => ({ rec: s.rec, p: foeFeet(s.rec) }))
         .filter((x) => x.p && distanceTo(x.p, at) < ARENA_KEEP_M)
         .sort((a, b) => distanceTo(a.p, at) - distanceTo(b.p, at));
       if (!live.length) return null;
-      return (want === 'far' ? live[live.length - 1] : live[0]).r;
+      return (want === 'far' ? live[live.length - 1] : live[0]).rec;
     },
-    arenaKills: () => ratKills,   // BENCH1: the dungeon bench keeps the two rats alive; the host asks each frame   // BENCH1: the arena's own two rats, through the context spawner   // BENCH1: a walker's eye, level - a corridor is not a ceiling
+    arenaKills: () => ratKills,   // BENCH1: the ring's fallen, the proof a fight happened
     drawn: host.drawn ?? null,
     ready: host.ready ?? null,
     readied: host.readied ?? null,
+    lit: host.lit ?? null,   // BENCH1: is a light of ours burning - the torch ask is repeated while it is not
     stow: host.stow ?? null,
     entry: host.entry ?? null,
     plan: host.plan ?? null,
     sites: host.sites ?? null,   // BENCH1: the dungeon's own floor as places, so the walk crosses it instead of walking to the rats and back
+    doors: host.doors ?? null,   // BENCH1: the action doors near the walk, so it opens them instead of walking into them
     build: null,
     document: host.document,
   });
@@ -614,7 +687,7 @@ const turnTo = (want, have) => {
  *   params?: URLSearchParams | null,
  *   feet: () => number[], heading: () => number, turnBy: (rad:number) => void,
  *   press: (code:string) => void, release: (code:string) => void,
- *   codes: () => { forward?:string, run?:string, swing?:string } | null,
+ *   codes: () => { forward?:string, run?:string, swing?:string, activate?:string } | null,
  *   entity: () => any, renderer?: (() => any) | null,
  *   settle?: (() => boolean) | null,
  *   settleCeilingMs?: number | null,
@@ -626,6 +699,7 @@ const turnTo = (want, have) => {
  *   rearm?: (() => void) | null,
  *   plan?: ((from:number[], to:number[]) => number[][] | null) | null,
  *   sites?: (() => number[][]) | null,
+ *   doors?: (() => Array<{ pos:number[], closed:boolean, locked:boolean, special:boolean }>) | null,
  *   travel?: (() => boolean) | null,
  *   applyPreset?: ((preset:object|null) => void) | null,
  *   build?: (() => string | null) | null,
@@ -668,6 +742,7 @@ export function createBenchHost(deps) {
   let walkLast = null;          // the last feet read, for the metres the leg covered
   let walkedM = 0;              // the metres the leg's body actually covered
   let walkedStuck = 0;          // how many times it abandoned a route and planned again
+  let doorAt = 0;               // when the walk last pressed Activate at a door, so one door is not rattled
   let killsAt = null;           // an ARENA page's kills when the leg began - the proof a restocked ring needs
   let damageAt = null;          // a fight leg's foe health when it began, for the damage proof at its end
   let report = null;
@@ -926,12 +1001,45 @@ export function createBenchHost(deps) {
 
   /** The walk keys, pressed from the bindings the player has, or a named failure - a benchmark
    *  that pressed a key of its own while the player had rebound Walk Forward would measure
-   *  nothing, quietly, on that player's machine only. */
+   *  nothing, quietly, on that player's machine only. `activateCode` is the player's own
+   *  ActivateCenterObject, kept here because the walk's doors are pressed with it. */
+  let activateCode = null;
   function hands() {    if (bot) return bot;
     const codes = deps.codes?.() ?? null;
     if (!codes?.forward || !codes?.swing) return null;
+    activateCode = typeof codes.activate === 'string' ? codes.activate : null;
     bot = createBenchBot({ codes, press: (c) => deps.press?.(c), release: (c) => deps.release?.(c), look: (r) => deps.turnBy?.(r) });
     return bot;
+  }
+
+  /** THE DOOR THE WALK IS STANDING AT, opened the way a person opens one: the closed, unlocked door
+   *  within reach and in front is looked at, and the player's own Activate binding is pressed. The page
+   *  answers which doors are near (`deps.doors`, world/actionSystem's own door spots); a locked or
+   *  special one is never pressed, and never needs to be - the navmesh keeps those as walls, so no route
+   *  crosses one. Answers the door, or null. */
+  function doorInTheWay(at, h, now) {
+    if (!activateCode || typeof deps.doors !== 'function') return null;
+    let spots = null;
+    try { spots = deps.doors(); } catch { spots = null; }
+    if (!Array.isArray(spots)) return null;
+    let best = null;
+    let bestD = DOOR_OPEN_M;
+    for (const s of spots) {
+      if (!s || !s.closed || s.locked || s.special) continue;   // open, locked, or a wall that swings: not ours
+      const p = s.pos;
+      if (!Array.isArray(p) || !Number.isFinite(p[0]) || !Number.isFinite(p[2])) continue;
+      const d = distanceTo(at, p);
+      if (d > bestD) continue;                                   // the nearer one is the one in the way
+      if (Math.abs(wrapAngle(bearingTo(at, p) - h)) > DOOR_FACE_RAD) continue;   // behind the shoulder
+      best = s;
+      bestD = d;
+    }
+    if (!best) return null;
+    if (now - doorAt >= DOOR_PRESS_MS) {
+      doorAt = now;
+      bot?.tap(activateCode, now, READY_HOLD_MS);
+    }
+    return best;
   }
 
   /** One leg's frame: the walk, the crowd's sweep, or the ring of foes - each through the game's
@@ -1025,10 +1133,24 @@ export function createBenchHost(deps) {
         return null;
       }
       if (step.done) { walk = null; return null; }   // the route is behind us: plan the next one
-      if (step.target) b.steer({ at, heading: h, target: step.target, dt, withinRad: WALK_FACE_RAD });
+      // AND THE DOOR IN THE WAY IS THE WALK'S OWN TO OPEN. The navmesh leaves an unlocked action door out
+      // of the wall it bakes - the door is one its own foes walk through - so the route crosses a shut
+      // door and the body walks its nose into the panel. So: look at the door, press the player's own
+      // Activate binding, and let the host's PlayerActivate open it. The tap is released by the bot's own
+      // tick, so nothing is left held.
+      const door = doorInTheWay(at, h, clock());
+      if (door) { try { deps.aimAt?.([door.pos[0], door.pos[1], door.pos[2]]); } catch { /* a look that refused */ } }
+      b.tick(clock());
+      // AND THE SAME REACH IS THE ONE THE BOT WALKS BY. `advancePath` leaves a waypoint behind at
+      // WALK_WAYPOINT_M, so the steerer must count it arrived at the same metre: the track's own 2.5 m
+      // made the body stand two and a half metres short of every corner the walk was still steering at,
+      // which arrived at nothing and spent the leg waiting for a route it never left.
+      if (step.target && !door) b.steer({ at, heading: h, target: step.target, dt, withinRad: WALK_FACE_RAD, reach: WALK_WAYPOINT_M });
       // A WALKER LOOKS WHERE IT IS GOING. Whatever pitch the last fight aimed with is not a corridor's
-      // - the owner watching the dungeon leg: "also stop looking up".
-      try { deps.level?.(); } catch { /* a host with no level look */ }
+      // - the owner watching the dungeon leg: "also stop looking up". A DOOR IN THE WAY KEEPS THE LOOK
+      // IT WAS GIVEN, though: the activation ray starts at the eye and goes where the camera looks, so
+      // levelling the pitch would fire the press over the door's top.
+      if (!door) { try { deps.level?.(); } catch { /* a host with no level look */ } }
       return null;
     }
     if (leg.id === 'crowd') {
@@ -1050,13 +1172,20 @@ export function createBenchHost(deps) {
     if (!deps.spawnRat) {
       // a page with no arena spawner cannot keep the ring, so the leg says so rather than measuring a
       // fight against whatever the layout happened to place
-      return 'this page offers no arena spawner (its host wired no spawnRat), so the two rats cannot be stood';
+      return 'this page offers no arena spawner (its host wired no spawnRat), so the ring cannot be stood';
     }
     try { deps.restockArena?.(h, at); } catch { /* a page whose arena refused */ }
-    const want = leg.id === 'bow' ? 'far' : 'near';
-    const foe = (typeof deps.arenaFoe === 'function' ? deps.arenaFoe(at, want) : null) ?? nearestFoe(foes, at, ARENA_KEEP_M);
+    // THE RING, NEVER THE LAYOUT. A layout foe the body cannot see - a wall between them - is a leg that
+    // casts into the stone, which is what a person watching saw: "archer and magic only stare at the floor
+    // and cast stuff". The arena stands its own four, in its own two ranks, and when it stands none the
+    // leg says so by name rather than aiming at whatever the level happened to place.
+    // ARM'S LENGTH IS THE BLADE'S: a swing reaches 2.5 m and nothing else does. A bow's shaft spawns at
+    // the bow and a spell leaves the eye, so both fight the FAR rank - which is also what stops the mage
+    // "staring at the floor": a rat at arm's length is a look pitched 30 degrees down.
+    const want = leg.id === 'blade' ? 'near' : 'far';
+    const foe = typeof deps.arenaFoe === 'function' ? deps.arenaFoe(at, want) : nearestFoe(foes, at, ARENA_KEEP_M);
     if (!foe) {
-      return `no rat is standing in the arena (${foes.length} foe(s) in the dungeon, none within ${ARENA_KEEP_M} m) - the spawner did not answer`;
+      return `no rat is standing in the ring (${foes.length} foe(s) in the dungeon, none of the arena's within ${ARENA_KEEP_M} m) - the spawner did not answer`;
     }
     const feet = foeFeet(foe);
     // A WEAPON THAT NEVER CAME OUT IS NOT A MISS. The rig refuses every blow behind `sheathed`, so a

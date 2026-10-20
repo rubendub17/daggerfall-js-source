@@ -29,6 +29,7 @@ import { applyHeadlessChargen } from './chargenSession.js';
 import { addItem } from './inventory.js';
 import { equipItem } from './equip.js';
 import { mintCondition, templateByIndex, itemBaseValue, setItemFields } from './item/itemTemplates.js';   // MAC-N1: SetItem's name + value, the one export
+import { TEMPLATES as ITEM_TEMPLATES } from './item/itemKinds.js';   // BENCH1: the Torch's template, from the item kinds' one home
 import { WEAPONS_ENUM, ARMOR_ENUM, createWeapon, ARROW_TEMPLATE } from '../combat/enemyEquipment.js';
 import { ARMOR_MATERIAL } from './armorMaterials.js';
 import { TRANSPORT_HORSE_TEMPLATE, hasHorse } from './inventorySession.js';   // TSR4: the mount is the pack's own question
@@ -181,6 +182,10 @@ export function testGearRows(gender) {
   // tests the refusal, not the weapon.
   rows.push({ kind: 'thunderlock', label: 'Dwarven Thunderlock', templateIndex: THUNDERLOCK_TEMPLATE });
   rows.push({ kind: 'pellets', label: 'Dwemer Pellets (30)', templateIndex: PELLET_TEMPLATE, stackCount: 30 });
+  // A LIGHT (BENCH1): a dungeon is dark until somebody lights something, and a test character who carries
+  // no torch lights nothing at all. One row, in the same table the bow and its quiver come from, so the
+  // benchmark can equip a torch without minting one of its own (ONE DFU MEMBER, ONE EXPORT).
+  rows.push({ kind: 'light', label: 'Torch', templateIndex: ITEM_TEMPLATES.Torch });
   // The full steel suit - every armor slot.
   for (const [name, t] of Object.entries(A)) rows.push({ kind: 'armor', label: `Steel ${name.replace(/_/g, ' ')}`, templateIndex: t, material: M.Steel });
   // Material rows that change the Morrowind mapping.
@@ -223,6 +228,10 @@ export function testItemOf(row) {
   // the test character's gun and the found one drift apart.
   if (row.kind === 'thunderlock') return createThunderlock();
   if (row.kind === 'pellets') return createPellets(row.stackCount);
+  // A LIGHT SOURCE, minted the shape a new character's own torches are (startingGear: the group and the
+  // template, through the name/value fill). NOT through mintCondition: a torch's `currentCondition` is
+  // not a hitPoints pool, and a zero there is a flame that dies on the player's first twenty-second tick.
+  if (row.kind === 'light') return setItemFields({ group: 'UselessItems2', templateIndex: row.templateIndex, flags: 0 });
   if (row.kind === 'armor') {
     // MAC-N1: through SetItem's value write - this armor was minted
     // with a name and NO value, the corpse's shape exactly.

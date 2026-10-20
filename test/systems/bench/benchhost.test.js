@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
-import { createBenchHost, SWING_MS, SWING_EVERY_MS } from '../../../src/scenes/benchHost.js';
+import { createBenchHost, createDungeonBench, SWING_MS, SWING_EVERY_MS, ARENA_RATS, ARENA_SPAWN_TRIES, DOOR_OPEN_M } from '../../../src/scenes/benchHost.js';
+import { distanceTo } from '../../../src/systems/bench/track.js';
 import { BENCH_VITAL } from '../../../src/systems/bench/law.js';
 
 // BENCH1's host: the leg machine. It cannot be booted here (there is no ARENA2 in this checkout),
@@ -246,21 +247,40 @@ test('BENCH1 host: a fight leg that kills reports its kills, and the run passes'
   assert.match(s.report.legs[0].notes.join(' | '), /2 rat\(s\) killed/);
 });
 
-test("BENCH1 host: the dungeon walk is the ENGINE's route, followed waypoint by waypoint, not a straight line", () => {
-  // the first real run held forward and walked into the first wall it met. The walk leg now asks the
-  // host for a plan over the dungeon's own navmesh and steers at its waypoints - so the headings it
-  // asked for are the ROUTE's, and a plan that cannot be walked is a named failure.
+test("BENCH1 host: the dungeon walk is the ENGINE's route over the dungeon's own FLOOR - and a body it pins plans again", () => {
+  // TWO WATCHES, ONE LEG. The first: the walk asked the mesh for a route and followed it waypoint by
+  // waypoint (holding forward and walking into the first wall it met was the first real run). The
+  // second, the owner's - "in the dungeon the guy isn't going through the dungeon... navigate, walk, go
+  // into rooms, turn around": the destinations were the foes and ONLY the foes, so the leg walked to
+  // the rats the fight legs had just left standing and walked back, and the floor it was supposed to
+  // cross was never a destination at all. Now the floor's own places are the destinations (`sites`,
+  // one centre per navmesh polygon) and the foes are the fallback.
   const asked = [];
+  const sites = [[120, 0, 0], [60, 0, 0], [90, 0, 0]];
   const w = fakeWorld({
     scene: 'dungeon',
     params: new URLSearchParams('bench=dungeon'),
     census: () => 5,
-    foes: () => [{ ai: { feet: [0, 0, 40], height: 1.8 }, entity: { health: 40, maxHealth: 40 }, dead: false }],
-    plan: (from, to) => { asked.push([from[0], to[0]]); return [[from[0], from[1], from[2]], [from[0] + 6, from[1], from[2] + 6], [to[0], to[1], to[2]]]; },
+    foes: () => [{ ai: { feet: [0, 0, 4], height: 1.8 }, entity: { health: 40, maxHealth: 40 }, dead: false }],
+    sites: () => sites,
+    plan: (from, to) => { asked.push(to); return [[from[0], from[1], from[2]], [from[0] + 6, from[1], from[2] + 6], [to[0], to[1], to[2]]]; },
   });
   w.play(5 + 4);
   assert.equal(asked.length >= 1, true, 'the leg asked the engine for a route');
+  assert.deepEqual(asked[0], [120, 0, 0], `its FIRST question is the far end of the floor, not the rat four metres away: ${JSON.stringify(asked[0])}`);
   assert.equal(w.asked.press.includes('KeyW'), true, 'and walked it, holding the player\'s own Walk Forward');
+  // THE STUCK WATCH. This fake body never moves, which is a body pinned by the collider: the watch is
+  // set in metres and milliseconds, so it fires - the old one compared a point with a point, never
+  // fired, and spent the whole leg against the same jamb.
+  w.play(4);
+  assert.ok(asked.length >= 2, `a pinned body plans again rather than walk into the same wall for the leg: ${JSON.stringify(asked)}`);
+  assert.ok(distanceTo(asked[1], [120, 0, 0]) > 8, `and the second plan is somewhere ELSE: ${JSON.stringify(asked[1])}`);
+  // AND THE LEG'S OWN PROOF AT ITS END: the metres it covered, which a pinned body owes nothing of.
+  w.play(20);
+  const s = w.host.surface;
+  assert.equal(s.state, 'failed');
+  assert.match(s.report.failures.join(' | '), /under the 8 m a walked dungeon owes/, 'a leg that covered no ground says so by name, not in a note');
+  assert.match(s.report.legs[0].notes.join(' | '), /route\(s\) abandoned as pinned/, 'and reports the routes it had to abandon');
   // a page with no plan at all says so, by name
   const blind = fakeWorld({ scene: 'dungeon', params: new URLSearchParams('bench=dungeon'), census: () => 5, foes: () => [{ ai: { feet: [0, 0, 40] }, entity: { health: 1 }, dead: false }] });
   blind.play(5 + 2);
@@ -297,4 +317,181 @@ test('BENCH1 host: the host is a module the wiring ticks - it never reaches for 
     assert.equal(code.includes(forbidden), false, `the host reaches for ${forbidden} - the shot gate's surface is a probe's, not a contract`);
   }
   assert.ok(existsSync(new URL('../../../src/systems/bench/tracks.js', import.meta.url)), 'the route module the host imports must exist, even empty');
+});
+
+test('BENCH1 host: a walker opens the door it is standing at with the player\'s own Activate, and only that one', () => {
+  // "how it walk but cant open doors": a dungeon's navmesh leaves an unlocked action door OUT of the wall
+  // it bakes (the door is one its own foes walk through), so the route crosses a shut door and the body
+  // walks into the panel. The walker looks at it and presses the player's ActivateCenterObject - the key
+  // a person's E is - and the host's own PlayerActivate opens it.
+  const walk = (doors) => {
+    const w = fakeWorld({
+      scene: 'dungeon',
+      params: new URLSearchParams('bench=dungeon'),
+      census: () => 5,
+      codes: () => ({ forward: 'KeyW', run: 'KeyR', swing: 'Mouse1', activate: 'KeyE' }),
+      foes: () => [],
+      sites: () => [[0, 0, 120], [0, 0, 60]],
+      plan: (from, to) => [[from[0], from[1], from[2]], [to[0], to[1], to[2]]],
+      doors,
+    });
+    w.play(5 + 3);
+    return w;
+  };
+  const closed = { pos: [1, 1.1, 1], key: 'act:1:1', closed: true, locked: false, special: false };
+  const at = walk(() => [closed]);
+  assert.ok(at.asked.press.includes('KeyE'), 'the closed door in the way is pressed with the player\'s Activate');
+  assert.ok(at.asked.release.includes('KeyE'), 'and let go again - a held key with no hand on it is the disease');
+  const presses = at.asked.press.filter((c) => c === 'KeyE').length;
+  assert.ok(presses <= Math.ceil(3000 / 700) + 1, `one press per beat, not one a frame: ${presses} in 3 s`);
+
+  // A door that is already OPEN is not a door in the way, and a LOCKED one cannot be opened by hand - the
+  // mesh keeps a locked door as a wall, so a route never crosses one.
+  const open = walk(() => [{ ...closed, closed: false }]);
+  assert.equal(open.asked.press.includes('KeyE'), false, 'an open door is walked through, not pressed');
+  const locked = walk(() => [{ ...closed, locked: true }]);
+  assert.equal(locked.asked.press.includes('KeyE'), false, 'a locked door is not rattled - the walk cannot open it');
+  // ...and a door behind the shoulder is not the way the body is going
+  const behind = walk(() => [{ ...closed, pos: [0, 1.1, -1] }]);
+  assert.equal(behind.asked.press.includes('KeyE'), false, 'a door behind the walk is one it will come back to');
+  // the reach is the player's own activation ray, not the whole room
+  const far = walk(() => [{ ...closed, pos: [0, 1.1, DOOR_OPEN_M + 2] }]);
+  assert.equal(far.asked.press.includes('KeyE'), false, 'a door past the press reach is walked up to first');
+});
+
+// THE DUNGEON PAGE ITSELF. The torch and the ring are wired in `createDungeonBench` - the module
+// scenes/dungeon.js hands the page's own doors to - so they are tested there, over a fake page.
+/** The page: a spawner that stands rats where it is told, a pack, a light and a drawn weapon. */
+function fakeDungeon(over = {}) {
+  const said = { keys: [], released: [], stowed: [], equipped: [], spawned: [], aims: [], warps: [], attack: [] };
+  const rats = [];
+  const entity = { chargenDone: true, gender: 'male', health: 100, maxHealth: 100, maxMagicka: 0 };
+  const state = { lit: false, drawn: false, clock: 1000 };
+  const ratAt = (pos) => {
+    const rec = { ai: { feet: [...pos], height: 0.6 }, entity: { health: 12, maxHealth: 12 }, dead: false };
+    rats.push(rec);
+    said.spawned.push([pos[0], pos[1], pos[2]]);
+    return rec;
+  };
+  const host = {
+    params: new URLSearchParams('bench=blade'),
+    feet: () => [0, 0, 0],
+    heading: () => 0,
+    turnBy: () => {},
+    bindings: () => ({}),
+    codeForAction: (_store, action) => ({
+      MoveForwards: 'KeyW', Run: 'KeyR', SwingWeapon: 'Mouse1', ActivateCenterObject: 'KeyE',
+      ReadyWeapon: 'KeyQ', TorchToggleLight: 'KeyT',
+    })[action] ?? null,
+    entity: () => entity,
+    equip: (it) => said.equipped.push(it),
+    stow: (it) => said.stowed.push(it),
+    foes: () => rats,
+    spawnRat: (pos) => ratAt(pos),
+    warp: (p) => { said.warps.push([...p]); return true; },
+    attack: (held) => said.attack.push(!!held),
+    aimAt: (p) => said.aims.push([...p]),
+    level: () => {},
+    entry: () => [0, 0, 0],
+    plan: () => null,
+    lit: () => state.lit,
+    drawn: () => state.drawn,
+    ready: () => { state.drawn = !state.drawn; },
+    document: null,
+    ...over,
+  };
+  const bench = createDungeonBench(host);
+  const play = (seconds) => {
+    const steps = Math.round((seconds * 1000) / FRAME_MS);
+    for (let i = 0; i < steps; i++) { state.clock += FRAME_MS; bench.tick(FRAME_MS / 1000, state.clock); }
+    return bench.surface;
+  };
+  return { bench, play, said, rats, entity, state };
+}
+
+/** A window, so the page's synthetic key edges are visible: the dungeon page's presses are
+ *  KeyboardEvents on the window (ui/gamepadInput's own idiom), and Node has neither. */
+function withWindow(fn) {
+  const realWindow = globalThis.window;
+  const realKeyboardEvent = globalThis.KeyboardEvent;
+  const keys = [];
+  globalThis.window = { dispatchEvent: (e) => { keys.push(`${e?.type}:${e?.code}`); return true; } };
+  globalThis.KeyboardEvent = class { constructor(type, init = {}) { this.type = type; this.code = init.code; } };
+  try { return fn(keys); } finally {
+    globalThis.window = realWindow;
+    globalThis.KeyboardEvent = realKeyboardEvent;
+  }
+}
+
+test('BENCH1 dungeon page: the run carries a TORCH - it is stowed from the Test Room\'s rows and lit with the player\'s own key', () => {
+  // The dungeon is dark until somebody lights something, and the pinned character carries no torch: the
+  // Light-or-douse press lit nothing at all, for a whole release. So the torch is STOWED the way the
+  // quiver is (the Test Room's one item table - the bench equips, it never mints), and the press is the
+  // player's own binding.
+  const found = withWindow((keys) => {
+    const w = fakeDungeon();
+    w.play(5 + 2);
+    w.state.lit = true;   // stop the "still dark" retry chain before the test ends
+    return { w, keys };
+  });
+  assert.equal(found.w.said.stowed.filter((it) => it?.templateIndex === 247).length, 1,
+    `a torch is stowed once, from the Test Room's light row: ${JSON.stringify(found.w.said.stowed.map((i) => i?.templateIndex))}`);
+  assert.ok(found.keys.includes('keydown:KeyT'), `the player's own Light-or-douse is pressed: ${JSON.stringify(found.keys)}`);
+});
+
+test('BENCH1 dungeon page: the walk sheathes what a fight was holding before it lights, because a drawn bow has no free hand', () => {
+  const found = withWindow(() => {
+    const w = fakeDungeon({ params: new URLSearchParams('bench=dungeon'), plan: () => null, sites: () => [] });
+    w.state.drawn = true;   // the bow leg left a drawn bow in both hands
+    w.play(5.2);
+    w.state.lit = true;
+    return w;
+  });
+  assert.equal(found.state.drawn, false, 'the walk put the weapon away - a torch is carried in a free hand');
+});
+
+test('BENCH1 dungeon page: the ring stands FOUR rats in two ranks, and refills a slot whose rat fell', () => {
+  // "the one rat died in the mele fight and archer and magic only stare at the floor": a ring of two is
+  // emptied by a melee leg. Four are stood - two at arm's length, two across the room - and each slot
+  // remembers its own rat, so what falls is replaced where it stood.
+  const w = fakeDungeon();
+  w.play(5 + 2);
+  const near = w.said.spawned.filter((p) => Math.abs(distanceTo([0, 0, 0], p) - 2.5) < 0.5);
+  const far = w.said.spawned.filter((p) => Math.abs(distanceTo([0, 0, 0], p) - 7) < 0.5);
+  assert.equal(w.said.spawned.length, ARENA_RATS, `the ring is ARENA_RATS rats: ${JSON.stringify(w.said.spawned.map((p) => distanceTo([0, 0, 0], p)))}`);
+  assert.equal(near.length, 2, 'two at arm\'s length, for a blade and a spell');
+  assert.equal(far.length, 2, 'two across the room, for a bow');
+  // A RAT THAT FELL IS A SLOT TO FILL AGAIN, not a ring that shrinks.
+  w.rats[0].dead = true;
+  w.play(0.2);
+  assert.equal(w.said.spawned.length, ARENA_RATS + 1, 'the fallen rat\'s own slot is stood again');
+  w.state.lit = true;
+});
+
+test('BENCH1 dungeon page: the blade fights the NEAR rat and the bow and the spell the FAR one - the ring\'s two ranks are the point', () => {
+  const aimOf = (leg) => {
+    const w = fakeDungeon({ params: new URLSearchParams(`bench=${leg}`) });
+    w.play(5 + 1);
+    w.state.lit = true;
+    const last = w.said.aims.at(-1) ?? null;
+    return last ? distanceTo([0, 0, 0], last) : null;
+  };
+  const near = aimOf('blade');
+  const far = aimOf('bow');
+  const cast = aimOf('spell');
+  assert.ok(near !== null && near > 1.5 && near < 3.5, `a blade is aimed at the near rank: ${near}`);
+  assert.ok(far !== null && far > 5.5 && far < 8.5, `a bow is aimed at the far rank: ${far}`);
+  // A SPELL LEAVES THE EYE, not the hand: at arm's length the look is pitched 30 degrees down at the rat,
+  // which is the "staring at the floor and casting" a person watching reported.
+  assert.ok(cast !== null && cast > 5.5 && cast < 8.5, `a spell is aimed at the far rank: ${cast}`);
+});
+
+test('BENCH1 dungeon page: a spawner that stands nothing is a NAMED failure, not a body casting at a wall', () => {
+  const w = fakeDungeon({ spawnRat: () => null });
+  w.play(5 + 3);
+  w.state.lit = true;
+  const s = w.bench.surface;
+  assert.equal(s.state, 'failed');
+  assert.match(s.failures.join(' | '), /no rat is standing in the ring/, `a ring that stood nothing says so: ${JSON.stringify(s.failures)}`);
+  assert.ok(ARENA_SPAWN_TRIES >= 2, 'a slot is asked for more than once before it gives up');
 });

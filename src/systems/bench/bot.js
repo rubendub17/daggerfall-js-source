@@ -47,12 +47,17 @@ export function createBenchBot({ codes, press, release, look = null }) {
   const letGo = (code) => { if (code && held.delete(code)) release(code); };
   let swingUntil = null;   // ms, the deadline the caller set; null when nothing is held
   let swings = 0;
+  const tapUntil = new Map();   // code -> ms: a one-beat press (a door, a lever) still waiting to be released
+  let taps = 0;
 
   return {
     /** Walk at `target` from where the character stands. Holds the walk keys the game's own bindings name,
-     *  turns the look by as much as one tick allows, and lets go of what it no longer wants. */
-    steer({ at, heading, target, dt = 1 / 60 } = {}) {
-      const s = steerTo({ at, heading, target, dt });
+     *  turns the look by as much as one tick allows, and lets go of what it no longer wants. `withinRad`
+     *  is the caller's facing gate (a corridor asks the body to turn before it walks, a street does not)
+     *  and `reach` the caller's idea of arrival - the dungeon walk's waypoints are a corridor's, not a
+     *  street's, so it hands in its own. */
+    steer({ at, heading, target, dt = 1 / 60, withinRad, reach } = {}) {
+      const s = steerTo({ at, heading, target, dt, withinRad, reach });
       if (s.forward) hold(codes.forward); else letGo(codes.forward);
       if (codes.run) { if (s.forward) hold(codes.run); else letGo(codes.run); }
       if (look && s.lookDelta) look(s.lookDelta);
@@ -65,23 +70,40 @@ export function createBenchBot({ codes, press, release, look = null }) {
       swings++;
       return swingUntil;
     },
-    /** Called once a frame: ends a swing whose deadline has passed, and does nothing else. */
+    /** PRESS A BOUND CODE FOR ONE BEAT - a door's Activate, a lever's. The host reads a key's EDGE on a
+     *  frame and ignores a press that went down and up inside one, so the key is held for `ms` and
+     *  released by `tick`, not by a timer: it rides the held set like every other press, so `stop()`
+     *  and the teardown let go of it (a held key with no hand on it is the disease). Answers the
+     *  deadline, or null when there is no such code to press. */
+    tap(code, now, ms = 250) {
+      if (!code) return null;
+      hold(code);
+      const until = (Number(now) || 0) + Math.max(1, Number(ms) || 1);
+      tapUntil.set(code, until);
+      taps++;
+      return until;
+    },
+    /** Called once a frame: ends a swing or a tap whose deadline has passed, and does nothing else. */
     tick(now) {
+      for (const [code, until] of tapUntil) if ((Number(now) || 0) >= until) { letGo(code); tapUntil.delete(code); }
       if (swingUntil !== null && (Number(now) || 0) >= swingUntil) {
         letGo(codes.swing);
         swingUntil = null;
       }
-      return swingUntil === null;
+      return swingUntil === null && tapUntil.size === 0;
     },
     /** Everything up - the run's end, a leg's end, and the teardown. */
     stop() {
       for (const code of [...held]) letGo(code);
+      tapUntil.clear();
       swingUntil = null;
     },
     /** The codes currently held, sorted - what a leg's report can say the bot was doing. */
     held: () => [...held].sort(),
     /** Swings begun this run - a fight leg that swung no times measured a corridor. */
     swings: () => swings,
+    /** Taps begun this run - a walk that pressed no door measured a walk with no doors in it. */
+    taps: () => taps,
     /** Whether a swing is in flight. */
     swinging: () => swingUntil !== null,
   };

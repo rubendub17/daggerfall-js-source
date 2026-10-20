@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pickWalk, advancePath, pathLengthFrom, PATH_MAX_GOALS, PATH_MIN_STEP_M, PATH_REACH_M } from '../../../src/systems/bench/dungeonPath.js';
+import { pickWalk, advancePath, pathLengthFrom, navSites, walkGoals, PATH_FOE_GOALS, PATH_MAX_GOALS, PATH_MIN_STEP_M, PATH_REACH_M } from '../../../src/systems/bench/dungeonPath.js';
 import { distanceTo } from '../../../src/systems/bench/track.js';
 
 // BENCH1's dungeon walk: the route is the engine's own (navmesh.js findPath, handed in as `plan`),
@@ -107,3 +107,111 @@ test('BENCH1 dungeon walk: the query is a parameter, so a bench with no query, n
   // a query that answers something that is not a path is refused, not walked
   assert.equal(pickWalk({ plan: () => 'a corridor', from: [0, 0, 0], goals }), null);
 });
+
+test('BENCH1 dungeon walk: the walk is offered the DUNGEON and not only its foes - the floor\'s places, farthest first and spread across the range', () => {
+  // THE OWNER'S SECOND WATCH: "in the dungeon the guy isn't going through the dungeon". The leg was
+  // offered the foes and nothing else, so it walked to the two rats the fight legs had just left
+  // standing and walked back. The floor is the thing to cross, and `sites` are its own places (one
+  // centre per navmesh polygon, navmesh.js `navSites`).
+  const from = [0, 0, 0];
+  const sites = Array.from({ length: 16 }, (_, i) => [10 * (i + 1), 0, 0]);   // one every 10 m, out to 160 m
+  const goals = walkGoals({ sites, from, maxGoals: 8 });
+  assert.equal(goals.length, 8, `eight questions asked: ${JSON.stringify(goals)}`);
+  assert.deepEqual(goals[0], [160, 0, 0], 'the FIRST question is the far end of the dungeon - the walk crosses the floor, not the room it stands in');
+  for (let i = 1; i < goals.length; i++) {
+    assert.ok(distanceTo(from, goals[i - 1]) > distanceTo(from, goals[i]), `the questions come back DOWN the range: ${JSON.stringify(goals)}`);
+  }
+  assert.ok(distanceTo(from, goals[goals.length - 1]) <= 30,
+    `and the spread reaches the near end too, not only the far half: ${JSON.stringify(goals.map((g) => g[0]))}`);
+});
+
+test('BENCH1 dungeon walk: a place this leg already walked to, and one at the body\'s own feet, are not destinations', () => {
+  const from = [0, 0, 0];
+  const sites = [[2, 0, 0], [40, 0, 0], [52, 0, 0], [80, 0, 0]];
+  const seen = [[40, 0, 0], [80, 0, 6]];
+  assert.deepEqual(walkGoals({ sites, from, seen, visitedM: 8 }), [[52, 0, 0]],
+    'the 40 m and 80 m rooms are behind us (within the memory radius of where the leg has been), the 2 m one is a turn rather than a walk, and the room past the first is new');
+  // no memory is no filter, and the memory radius is the caller's
+  assert.equal(walkGoals({ sites, from }).length, 3, 'a leg with no memory of where it has been is offered every place but the one at its feet');
+  assert.deepEqual(walkGoals({ sites: [[40, 0, 0]], from, seen: [[40, 0, 0]], visitedM: 0 }), [[40, 0, 0]],
+    'visitedM of 0 means the caller keeps no memory, not that everything is visited');
+});
+
+test('BENCH1 dungeon walk: the foes keep a fallback\'s share of the questions, and a page with no floor walks to its foes as it always did', () => {
+  const from = [0, 0, 0];
+  const sites = Array.from({ length: 16 }, (_, i) => [10 * (i + 1), 0, 0]);
+  const foes = [[30, 0, 20], [400, 0, 0]];
+  const goals = walkGoals({ sites, foes, from, maxGoals: 8 });
+  const isFoe = (g) => foes.some((f) => distanceTo(f, g) === 0);
+  assert.equal(goals.length, 8, `the leg asks its whole budget: ${JSON.stringify(goals)}`);
+  assert.equal(goals.filter(isFoe).length, PATH_FOE_GOALS, `the foes keep ${PATH_FOE_GOALS} of the eight - the floor cannot take every question`);
+  assert.equal(goals.slice(0, goals.length - PATH_FOE_GOALS).some(isFoe), false, 'and the floor\'s places are asked first');
+  // A PAGE WITH NO PLACES IS THE WALK THE LEG ALWAYS HAD: the foes, farthest first
+  assert.deepEqual(walkGoals({ foes, from, maxGoals: 8 }), [[400, 0, 0], [30, 0, 20]]);
+  // and nowhere to ask about is nothing asked
+  assert.deepEqual(walkGoals({ from }), []);
+  assert.deepEqual(walkGoals(), [], 'no body, no destinations');
+  assert.deepEqual(walkGoals({ sites, from, maxGoals: 0 }), [], 'a walk that may ask nothing asks nothing');
+});
+
+test('BENCH1 dungeon walk: a waypoint the body got PAST between two frames is behind it, however tight the reach', () => {
+  // The bench runs on the machines whose frame rate IS the measurement: at 10 fps a body at a run
+  // covers more than the 0.6 m reach between two frames, and a walker that only asked "within the
+  // reach" read the corner it had just passed as one still ahead - and turned round in the corridor.
+  const path = [[10, 0, 0], [20, 0, 0], [20, 0, 20]];
+  assert.deepEqual(advancePath(path, 0, [16, 0, 0], 0.6), { index: 1, done: false, target: path[1] },
+    'past the first waypoint and nearer the second: steer at the second');
+  assert.deepEqual(advancePath(path, 0, [8, 0, 0], 0.6), { index: 0, done: false, target: path[0] },
+    'a body still short of the waypoint steers at it, near the next one or not');
+  assert.deepEqual(advancePath(path, 2, [18, 0, 19], 0.6), { index: 2, done: false, target: path[2] },
+    'the last waypoint has no next: the reach alone decides it');
+  assert.deepEqual(advancePath(path, 2, [20, 0, 19.6], 0.6), { index: 3, done: true, target: null });
+});
+
+// THE DESTINATIONS THEMSELVES. `navSites` reads the mesh the dungeon's own foes path over and answers
+// the floor's places; `walkGoals` decides which of them a leg asks the engine about. The fixture below
+// is a chf as the bake leaves it - `mesh.verts` in GRID units (cells, relative to the mesh's origin),
+// each polygon an id ring into them, and the cell size and origin that turn grid into world - so no
+// baking is needed to ask where the floor is.
+
+/** A mesh of `count` one-cell polygons in a row, 4 m cells from the origin (100, -50). */
+function fakeChf(count = 2) {
+  const verts = [];
+  const polys = [];
+  for (let i = 0; i < count; i++) {
+    const s = verts.length;
+    verts.push({ x: i, y: 0, z: 0 }, { x: i + 1, y: 0, z: 0 }, { x: i + 1, y: 0, z: 1 }, { x: i, y: 0, z: 1 });
+    polys.push({ verts: [s, s + 1, s + 2, s + 3] });
+  }
+  return { cs: 4, xmin: 100, zmin: -50, colliders: null, mesh: { verts, polys } };
+}
+
+test('BENCH1 dungeon floor: a navmesh answers one place per polygon, its centre in WORLD units - not in the grid the mesh is cut on', () => {
+  const sites = navSites(fakeChf());
+  assert.equal(sites.length, 2, `one place a polygon: ${JSON.stringify(sites)}`);
+  assert.deepEqual(sites[0], [102, 0, -48], 'the cell\'s centre, through cs and the mesh\'s own origin');
+  assert.deepEqual(sites[1], [106, 0, -48], 'and the next cell\'s own centre - each polygon is its own place');
+  for (const p of sites) assert.equal(p.length, 3, 'a place is [x, y, z]: what findPath takes as a goal');
+});
+
+test('BENCH1 dungeon floor: no mesh, no polys, and a poly naming a vertex the mesh has not got are no places - not an error', () => {
+  assert.deepEqual(navSites(null), [], 'a page whose bake has not landed has no floor to offer');
+  assert.deepEqual(navSites({}), []);
+  const empty = fakeChf();
+  empty.mesh.polys = [];
+  assert.deepEqual(navSites(empty), [], 'a mesh with no polygons is no places');
+  const holed = fakeChf();
+  holed.mesh.polys.push({ verts: [0, 99] }, { verts: [] }, null);
+  assert.deepEqual(navSites(holed), navSites(fakeChf()), 'a broken polygon is skipped, and the good ones still answer');
+});
+
+test('BENCH1 dungeon floor: a place\'s height is the polygon\'s own surface, and 0 when the mesh carries no height layer', () => {
+  // A stacked dungeon has a lower floor under an upper one, and findPath picks each end's LEVEL from its
+  // y - a place handed "the tallest top above it" would send the walk to the floor above. `polyHeight`
+  // is the mesh's own answer, and a mesh with no colliders has none, which is 0.
+  const chf = fakeChf(1);
+  chf.colliders = [{ x0: 90, x1: 130, z0: -60, z1: -40, top: -3, bottom: -4 }];   // a dungeon floor below zero
+  assert.equal(navSites(chf)[0][1], -3, 'the floor under the polygon, not the world\'s zero');
+  assert.equal(navSites(fakeChf())[0][1], 0, 'no height layer, no height: 0, as before');
+});
+

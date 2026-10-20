@@ -48,6 +48,27 @@ test('BENCH1 bot: the look is asked for the tick\'s turn - the rate, not the ang
   assert.ok(looks[0] > 0 && looks[0] < 0.1, `turn asked: ${looks[0]}`);
 });
 
+test('BENCH1 bot: the caller\'s facing gate is the bot\'s too - a dungeon walk turns before it walks into the jamb', () => {
+  const wide = rig();
+  const tight = rig();
+  const q = { at: [0, 0, 0], heading: 0, target: [10, 0, 0], dt: 1 / 60 };   // a quarter turn off the bearing
+  wide.bot.steer(q);
+  tight.bot.steer({ ...q, withinRad: 0.8 });
+  assert.deepEqual(wide.pressed, ['KeyW', 'KeyR'], 'the track\'s own gate walks through the turn');
+  assert.deepEqual(tight.pressed, [], 'the tighter gate presses nothing until the body faces it');
+  assert.equal(tight.looks.length, 1, 'and the look is asked for anyway: it is how the body comes to face it');
+});
+
+test('BENCH1 bot: the caller\'s reach is the bot\'s too - a corridor waypoint is walked up to, a street waypoint is not', () => {
+  const street = rig();
+  const corridor = rig();
+  const q = { at: [0, 0, 0], heading: 0, target: [0, 0, 1.2], dt: 1 / 60 };
+  street.bot.steer(q);
+  corridor.bot.steer({ ...q, reach: 0.6 });
+  assert.deepEqual(street.pressed, [], '1.2 m is the street waypoint reached: nothing left to walk');
+  assert.deepEqual(corridor.pressed, ['KeyW', 'KeyR'], 'and the corridor waypoint is short of its own reach, so the body walks on');
+});
+
 test('BENCH1 bot: a swing is held to its deadline and then let go', () => {
   const { bot, pressed, released } = rig();
   const until = bot.startSwing(1000, 250);
